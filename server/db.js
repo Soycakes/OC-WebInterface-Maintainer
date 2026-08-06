@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 
-const db = new Database('data.db')
+const db = new Database(process.env.DATA_DIR ? `${process.env.DATA_DIR}/data.db` : 'data.db')
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS targets (

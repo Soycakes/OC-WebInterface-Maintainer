@@ -1,0 +1,7 @@
+{
+  "name": "oc-web-interface-maintainer",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "cd client && npm install && npm run build && cd ../server && npm install && node index.js"
+  }
+}
