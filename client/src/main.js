@@ -35,7 +35,7 @@ function formatCount(n) {
 function parseAmount(str) {
   if (!str || str.trim() === '') return null
   const multipliers = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }
-  const s = str.toLowerCase().trim().replace(/(\d+\.?\d*)([kmbt]+)/g, (_, num, suf) => {
+  const s = str.toLowerCase().trim().replace(/,/g, '').replace(/(\d+\.?\d*)([kmbt]+)/g, (_, num, suf) => {
     let val = parseFloat(num)
     for (const c of suf) val *= multipliers[c] || 1
     return String(val)
@@ -368,8 +368,8 @@ function renderTable() {
     const count = stock[t.label]
     const stockDisplay = count === undefined ? '...' : formatCount(count)
     const stockTitle = count === undefined ? 'Loading...' : String(count)
-    const thresholdVal = t.threshold === null ? '' : t.threshold
-    const batchVal = t.batch_size ?? 1
+    const thresholdVal = t.threshold === null ? '' : t.threshold.toLocaleString()
+    const batchVal = (t.batch_size ?? 1).toLocaleString()
     const enabled = t.enabled !== 0
     const opacity = enabled ? '' : 'style="opacity:0.35"'
 
@@ -440,6 +440,22 @@ function renderTable() {
     }
     input.addEventListener('input', handler)
     input.addEventListener('change', handler)
+    let savedValue = input.value
+    input.addEventListener('focus', () => { savedValue = input.value })
+    input.addEventListener('blur', () => {
+      if (input.value === '') return
+      const parsed = parseAmount(input.value)
+      if (parsed !== null) input.value = parsed.toLocaleString()
+    })
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') input.blur()
+      if (e.key === 'Escape') {
+        input.value = savedValue
+        clearTimeout(timers[input.dataset.label])
+        delete timers[input.dataset.label]
+        input.blur()
+      }
+    })
   })
 
   container.querySelectorAll('[data-delete]').forEach(btn => {
