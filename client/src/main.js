@@ -1,10 +1,6 @@
 const app = document.getElementById('app')
 
 const msg = {
-  saving: 'Saving...',
-  saved: 'Saved.',
-  saveFailed: 'Save failed.',
-  serverUnreachable: 'Save failed: server unreachable.',
   addFailed: 'Failed to add target: server unreachable.',
   deleteFailed: 'Failed to delete target: server unreachable.',
   serverDown: 'Failed to connect to server. Is it running?',
@@ -122,17 +118,14 @@ function showLogin() {
   }
 }
 
-async function saveTarget(label, data, silent = false) {
+async function saveTarget(label, data) {
   try {
-    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
+    await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     })
-    if (!silent) setStatus(res.ok ? msg.saved : msg.saveFailed)
-  } catch {
-    if (!silent) setStatus(msg.serverUnreachable)
-  }
+  } catch {}
 }
 
 async function addTarget(label, threshold, batchSize, isFluid) {
@@ -189,13 +182,6 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
   }
 }
 
-function scheduleUpdate(label, getData) {
-  clearTimeout(timers[label])
-  setStatus(msg.saving)
-  timers[label] = setTimeout(async () => {
-    await saveTarget(label, getData())
-  }, 5000)
-}
 
 function openItemPicker(onSelect) {
   const catalogSet = new Set(catalog)
@@ -411,8 +397,8 @@ function renderTable() {
       <td></td>
       <td>${slotHtml}</td>
       <td></td>
-      <td><input id="add-threshold" type="number" placeholder="infinite" ${pendingAdd ? '' : 'disabled'}></td>
-      <td><input id="add-batch" type="number" placeholder="1" value="1" ${pendingAdd ? '' : 'disabled'}></td>
+      <td><input id="add-threshold" type="text" placeholder="infinite" ${pendingAdd ? '' : 'disabled'}></td>
+      <td><input id="add-batch" type="text" placeholder="1" value="1" ${pendingAdd ? '' : 'disabled'}></td>
       <td><button id="add-btn" ${pendingAdd ? '' : 'disabled'}>Add</button></td>
     </tr>
   `
@@ -434,12 +420,29 @@ function renderTable() {
   `
 
   container.querySelectorAll('input[data-field]').forEach(input => {
-    const handler = () => {
-      const label = input.dataset.label
-      scheduleUpdate(label, () => getRowData(label))
-    }
-    input.addEventListener('input', handler)
-    input.addEventListener('change', handler)
+    let savedValue = input.value
+    input.addEventListener('focus', () => { savedValue = input.value })
+    input.addEventListener('blur', () => {
+      if (input.value === '') {
+        if (savedValue !== '') saveTarget(input.dataset.label, getRowData(input.dataset.label))
+        return
+      }
+      const parsed = parseAmount(input.value)
+      if (parsed !== null) input.value = parsed.toLocaleString()
+      if (input.value !== savedValue) saveTarget(input.dataset.label, getRowData(input.dataset.label))
+    })
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') input.blur()
+      if (e.key === 'Escape') {
+        input.value = savedValue
+        input.blur()
+      }
+    })
+  })
+
+  ;['add-threshold', 'add-batch'].forEach(id => {
+    const input = document.getElementById(id)
+    if (!input || input.disabled) return
     let savedValue = input.value
     input.addEventListener('focus', () => { savedValue = input.value })
     input.addEventListener('blur', () => {
@@ -449,12 +452,7 @@ function renderTable() {
     })
     input.addEventListener('keydown', e => {
       if (e.key === 'Enter') input.blur()
-      if (e.key === 'Escape') {
-        input.value = savedValue
-        clearTimeout(timers[input.dataset.label])
-        delete timers[input.dataset.label]
-        input.blur()
-      }
+      if (e.key === 'Escape') { input.value = savedValue; input.blur() }
     })
   })
 
@@ -467,7 +465,7 @@ function renderTable() {
       const label = btn.dataset.toggle
       const t = targets.find(t => t.label === label)
       if (!t) return
-      saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 }, true)
+      saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 })
         .then(fetchTargets)
         .then(render)
     })
@@ -492,12 +490,9 @@ function renderTable() {
 
   if (pendingAdd) {
     document.getElementById('add-btn').onclick = () => {
-      addTarget(
-        pendingAdd.label,
-        document.getElementById('add-threshold').value,
-        document.getElementById('add-batch').value || 1,
-        pendingAdd.is_fluid
-      )
+      const threshold = document.getElementById('add-threshold').value
+      const batch = document.getElementById('add-batch').value || '1'
+      addTarget(pendingAdd.label, threshold, batch, pendingAdd.is_fluid)
     }
   }
 }
