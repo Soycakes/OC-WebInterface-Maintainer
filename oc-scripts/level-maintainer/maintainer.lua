@@ -17,7 +17,6 @@ if fluids and next(fluids) and not ae2.hasFluidSupport() then
 end
 
 local catalogCache = nil
-local lastCraftableCount = nil
 local lastCycleStatus = { crafting = {}, requested = {}, failed = {} }
 
 local gpu = component.isAvailable("gpu") and component.gpu or nil
@@ -77,21 +76,10 @@ end
 local function catalog()
   if catalogCache then return catalogCache end
   local craftables = component.me_interface.getCraftables()
-  lastCraftableCount = #craftables
   catalogCache = buildCatalog(craftables)
+  craftables = nil
+  collectgarbage("collect")
   return catalogCache
-end
-
-local function checkCatalogChanged()
-  local craftables = component.me_interface.getCraftables()
-  local count = #craftables
-  if lastCraftableCount ~= nil and count ~= lastCraftableCount then
-    lastCraftableCount = count
-    catalogCache = buildCatalog(craftables)
-    log("catalog updated: " .. count .. " craftables")
-  elseif lastCraftableCount == nil then
-    lastCraftableCount = count
-  end
 end
 
 local function stock()
@@ -111,6 +99,7 @@ local function handleModem(_, _, _, _, _, msg)
     return
   end
   if msg == "requestcatalog" then
+    catalogCache = nil
     tunnel.send(serialization.serialize({ catalog = catalog() }))
     return
   end
@@ -146,7 +135,6 @@ while true do
     if msg then handleModem(nil, nil, nil, nil, nil, msg) end
   end
 
-  checkCatalogChanged()
   local active = ae2.crafting()
   local cycleRequested = {}
   local cycleFailed = {}
