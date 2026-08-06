@@ -107,16 +107,16 @@ function showLogin() {
   }
 }
 
-async function saveTarget(label, data) {
+async function saveTarget(label, data, silent = false) {
   try {
     const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     })
-    setStatus(res.ok ? msg.saved : msg.saveFailed)
+    if (!silent) setStatus(res.ok ? msg.saved : msg.saveFailed)
   } catch {
-    setStatus(msg.serverUnreachable)
+    if (!silent) setStatus(msg.serverUnreachable)
   }
 }
 
@@ -260,6 +260,7 @@ function connectWs() {
     }
     if (msg.type === 'targets') {
       targets = msg.targets
+      Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
       render()
     }
   }
@@ -275,6 +276,8 @@ function updateStockCells() {
       cell.textContent = count === undefined ? '...' : formatCount(count)
       cell.title = count === undefined ? 'Loading...' : String(count)
     }
+    const row = document.querySelector(`tr[data-row="${CSS.escape(t.label)}"]`)
+    if (row) row.className = rowStatusClass(t.label, t)
   }
 }
 
@@ -323,20 +326,21 @@ function renderNetworkBar() {
   `
 
   document.getElementById('network-select').onchange = async (e) => {
+    Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
     networkId = e.target.value
     await Promise.all([fetchTargets(), fetchStock(), fetchCatalog()])
     render()
   }
 }
 
-function statusDot(label, target) {
+function rowStatusClass(label, target) {
   const s = itemStatus
-  let cls = ''
-  if (s.failed && s.failed[label]) cls = 'status-error'
-  else if (s.crafting && s.crafting[label]) cls = 'status-crafting'
-  else if (s.requested && s.requested[label]) cls = 'status-ok'
-  else if (stock[label] !== undefined && target.threshold !== null && stock[label] >= target.threshold) cls = 'status-ok'
-  return `<span class="status-dot ${cls}" title="${s.failed?.[label] ?? ''}"></span>`
+  if (!s.crafting && !s.failed && !s.requested) return ''
+  if (s.failed?.[label]) return 'status-error'
+  if (s.crafting?.[label]) return 'status-crafting'
+  if (s.requested?.[label]) return 'status-ok'
+  if (stock[label] !== undefined && target.threshold !== null && stock[label] >= target.threshold) return 'status-ok'
+  return ''
 }
 
 function renderTable() {
@@ -349,14 +353,13 @@ function renderTable() {
     const thresholdVal = t.threshold === null ? '' : t.threshold
     const batchVal = t.batch_size ?? 1
     const enabled = t.enabled !== 0
-    const dimmed = enabled ? '' : 'style="opacity:0.35"'
+    const opacity = enabled ? '' : 'style="opacity:0.35"'
 
     return `
-      <tr ${dimmed}>
-        <td class="status-col">${statusDot(t.label, t)}</td>
+      <tr data-row="${t.label}" class="${rowStatusClass(t.label, t)}" ${opacity}>
         <td>
-          <button class="mc-toggle ${enabled ? 'mc-toggle-on' : ''}" data-toggle="${t.label}">
-            ${enabled ? '✓' : ''}
+          <button class="mc-toggle ${enabled ? 'mc-toggle-on' : 'mc-toggle-off'}" data-toggle="${t.label}">
+            ${enabled ? 'Enabled' : 'Disabled'}
           </button>
         </td>
         <td>
@@ -388,7 +391,6 @@ function renderTable() {
   const addRow = `
     <tr>
       <td></td>
-      <td></td>
       <td>${slotHtml}</td>
       <td></td>
       <td><input id="add-threshold" type="number" placeholder="infinite" ${pendingAdd ? '' : 'disabled'}></td>
@@ -401,7 +403,6 @@ function renderTable() {
     <table>
       <thead>
         <tr>
-          <th></th>
           <th></th>
           <th>Item</th>
           <th>Stock</th>
@@ -432,7 +433,7 @@ function renderTable() {
       const label = btn.dataset.toggle
       const t = targets.find(t => t.label === label)
       if (!t) return
-      saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 })
+      saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 }, true)
         .then(fetchTargets)
         .then(render)
     })
