@@ -3,17 +3,9 @@ local event = require("event")
 local internet = require("internet")
 local serialization = require("serialization")
 local json = require("json")
+local cfg = require("config")
 
 local tunnel = component.tunnel
-
-local cfg = {
-  server = "http://127.0.0.1:3000",
-  api_key = "gtnh-oc-web-2024",
-  network_id = "main",
-  poll_interval = 5,
-  tunnel_timeout = 8,
-  catalog_interval = 60,
-}
 
 local function log(msg)
   print("[" .. os.date("%H:%M:%S") .. "] " .. tostring(msg))
