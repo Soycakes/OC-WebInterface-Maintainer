@@ -26,6 +26,11 @@ function formatCount(n) {
   return String(n)
 }
 
+function iconStyle(x, y) {
+  if (x === undefined || y === undefined) return ''
+  return `background-position: -${x}px -${y}px`
+}
+
 function setStatus(msg) {
   statusMsg = msg
   const el = document.getElementById('status')
@@ -209,10 +214,13 @@ function renderTable() {
     const count = stock[t.label] ?? 0
     const thresholdVal = t.threshold === null ? '' : t.threshold
     const batchVal = t.batch_size ?? 1
+    const icon = t.x !== undefined
+      ? `<span class="gtnh-icon" style="${iconStyle(t.x, t.y)}"></span>`
+      : ''
 
     return `
       <tr>
-        <td>${t.label}</td>
+        <td>${icon} ${t.label}</td>
         <td id="stock-${t.label}" title="${count}">${formatCount(count)}</td>
         <td>
           <input
@@ -290,21 +298,58 @@ function getRowData(label) {
   }
 }
 
+let searchTimer = null
+
 function renderAddRow() {
   const container = document.getElementById('add-row')
   container.innerHTML = `
-    <p>
-      <input id="add-label" type="text" placeholder="Item label">
-      <input id="add-threshold" type="number" placeholder="Threshold (blank = infinite)">
-      <input id="add-batch" type="number" placeholder="Batch size" value="1">
-      <label><input id="add-fluid" type="checkbox"> Fluid</label>
-      <button id="add-btn">Add</button>
-    </p>
+    <div style="position:relative;display:inline-block">
+      <input id="add-label" type="text" placeholder="Item label" autocomplete="off">
+      <ul id="search-dropdown" style="display:none;position:absolute;z-index:10;background:#222;list-style:none;margin:0;padding:0;width:100%;max-height:200px;overflow-y:auto"></ul>
+    </div>
+    <input id="add-threshold" type="number" placeholder="Threshold (blank = infinite)">
+    <input id="add-batch" type="number" placeholder="Batch size" value="1">
+    <label><input id="add-fluid" type="checkbox"> Fluid</label>
+    <button id="add-btn">Add</button>
   `
+
+  const labelInput = document.getElementById('add-label')
+  const dropdown = document.getElementById('search-dropdown')
+
+  labelInput.addEventListener('input', () => {
+    clearTimeout(searchTimer)
+    const q = labelInput.value.trim()
+    if (!q) { dropdown.style.display = 'none'; return }
+    searchTimer = setTimeout(async () => {
+      const res = await fetch(`/api/items/search?q=${encodeURIComponent(q)}`)
+      const items = await res.json()
+      if (!items.length) { dropdown.style.display = 'none'; return }
+      dropdown.innerHTML = items.map(i => {
+        const style = iconStyle(i.x, i.y)
+        return `<li data-label="${i.label}" data-fluid="${i.is_fluid}" style="cursor:pointer;padding:4px 8px;display:flex;align-items:center;gap:6px">
+          <span class="gtnh-icon" style="${style}"></span>${i.label}
+        </li>`
+      }).join('')
+      dropdown.style.display = 'block'
+    }, 200)
+  })
+
+  dropdown.addEventListener('click', e => {
+    const li = e.target.closest('li')
+    if (!li) return
+    labelInput.value = li.dataset.label
+    document.getElementById('add-fluid').checked = li.dataset.fluid === 'true'
+    dropdown.style.display = 'none'
+  })
+
+  document.addEventListener('click', e => {
+    if (!container.contains(e.target)) dropdown.style.display = 'none'
+  }, { once: false })
 
   document.getElementById('add-btn').onclick = () => {
     const label = document.getElementById('add-label').value.trim()
     if (!label) return
+    dropdown.style.display = 'none'
     addTarget(
       label,
       document.getElementById('add-threshold').value,

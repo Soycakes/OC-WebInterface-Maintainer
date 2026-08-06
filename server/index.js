@@ -9,6 +9,11 @@ import { fileURLToPath } from 'url'
 
 const dir = dirname(fileURLToPath(import.meta.url))
 const itemRegistry = JSON.parse(readFileSync(resolve(dir, 'data/gtnh_registry.json'), 'utf8'))
+const iconMap = new Map(itemRegistry.map(i => [i.label, { x: i.x, y: i.y }]))
+
+function withIcons(targets) {
+  return targets.map(t => ({ ...t, ...iconMap.get(t.label) }))
+}
 import {
   getTargets, upsertTarget, deleteTarget,
   getStock, getCatalog, getNetworks,
@@ -77,7 +82,7 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
   if (stock) updateStock(network_id, stock)
   if (catalog) updateCatalog(network_id, catalog)
   if (stock) broadcast({ type: 'stock', network_id, stock, sleep })
-  res.json({ targets: getTargets(network_id) })
+  res.json({ targets: withIcons(getTargets(network_id)) })
 })
 
 app.get('/api/items/search', browserAuth, (req, res) => {
@@ -100,7 +105,7 @@ app.get('/api/networks', browserAuth, (req, res) => {
 })
 
 app.get('/api/targets/:networkId', browserAuth, (req, res) => {
-  res.json(getTargets(req.params.networkId))
+  res.json(withIcons(getTargets(req.params.networkId)))
 })
 
 function parseTarget(body) {
@@ -126,7 +131,7 @@ app.post('/api/targets/:networkId', browserAuth, (req, res) => {
   const target = parseTarget(req.body)
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
   upsertTarget(req.params.networkId, target)
-  broadcast({ type: 'targets', network_id: req.params.networkId, targets: getTargets(req.params.networkId) })
+  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
   res.json({ ok: true })
 })
 
@@ -134,13 +139,13 @@ app.put('/api/targets/:networkId/:label', browserAuth, (req, res) => {
   const target = parseTarget({ ...req.body, label: req.params.label })
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
   upsertTarget(req.params.networkId, target)
-  broadcast({ type: 'targets', network_id: req.params.networkId, targets: getTargets(req.params.networkId) })
+  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
   res.json({ ok: true })
 })
 
 app.delete('/api/targets/:networkId/:label', browserAuth, (req, res) => {
   deleteTarget(req.params.networkId, req.params.label)
-  broadcast({ type: 'targets', network_id: req.params.networkId, targets: getTargets(req.params.networkId) })
+  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
   res.json({ ok: true })
 })
 

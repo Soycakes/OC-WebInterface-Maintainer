@@ -19,3 +19,15 @@ body {
 input::placeholder {
   opacity: 0.35;
 }
+
+.gtnh-icon {
+  width: 32px;
+  height: 32px;
+  background-image: url('/atlas.webp');
+  background-repeat: no-repeat;
+  background-size: auto;
+  display: inline-block;
+  image-rendering: pixelated;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
