@@ -1,10 +1,27 @@
 const app = document.getElementById('app')
 
+const msg = {
+  saving: 'Saving...',
+  saved: 'Saved.',
+  saveFailed: 'Save failed.',
+  serverUnreachable: 'Save failed: server unreachable.',
+  addFailed: 'Failed to add target: server unreachable.',
+  deleteFailed: 'Failed to delete target: server unreachable.',
+  serverDown: 'Failed to connect to server. Is it running?'
+}
+
 let networkId = null
 let targets = []
 let stock = {}
 let networks = []
 const timers = {}
+let statusMsg = ''
+
+function setStatus(msg) {
+  statusMsg = msg
+  const el = document.getElementById('status')
+  if (el) el.textContent = msg
+}
 
 async function fetchNetworks() {
   const res = await fetch('/api/networks')
@@ -22,40 +39,54 @@ async function fetchStock() {
 }
 
 async function saveTarget(label, data) {
-  await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data)
-  })
+  try {
+    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    })
+    setStatus(res.ok ? msg.saved : msg.saveFailed)
+  } catch {
+    setStatus(msg.serverUnreachable)
+  }
 }
 
 async function addTarget(label, threshold, batchSize, isFluid) {
-  await fetch(`/api/targets/${networkId}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      label,
-      threshold: threshold === '' ? null : Number(threshold),
-      batch_size: Number(batchSize),
-      is_fluid: isFluid
+  try {
+    await fetch(`/api/targets/${networkId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label,
+        threshold: threshold === '' ? null : Number(threshold),
+        batch_size: Number(batchSize),
+        is_fluid: isFluid
+      })
     })
-  })
-  await fetchTargets()
-  render()
+    await fetchTargets()
+    render()
+  } catch {
+    setStatus(msg.addFailed)
+  }
 }
 
 async function removeTarget(label) {
   clearTimeout(timers[label])
   delete timers[label]
-  await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
-    method: 'DELETE'
-  })
-  await fetchTargets()
-  render()
+  try {
+    await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
+      method: 'DELETE'
+    })
+    await fetchTargets()
+    render()
+  } catch {
+    setStatus(msg.deleteFailed)
+  }
 }
 
 function scheduleUpdate(label, getData) {
   clearTimeout(timers[label])
+  setStatus(msg.saving)
   timers[label] = setTimeout(async () => {
     await saveTarget(label, getData())
   }, 5000)
@@ -93,6 +124,7 @@ function render() {
   app.innerHTML = `
     <div>
       <h1>OC Level Maintainer</h1>
+      <p id="status">${statusMsg}</p>
       <div id="network-bar"></div>
       <div id="table-container"></div>
       <div id="add-row"></div>
@@ -240,11 +272,15 @@ function renderAddRow() {
 }
 
 async function init() {
-  networks = await fetchNetworks()
-  networkId = networks[0] || 'main'
-  await Promise.all([fetchTargets(), fetchStock()])
-  render()
-  connectWs()
+  try {
+    networks = await fetchNetworks()
+    networkId = networks[0] || 'main'
+    await Promise.all([fetchTargets(), fetchStock()])
+    render()
+    connectWs()
+  } catch {
+    app.innerHTML = `<p>${msg.serverDown}</p>`
+  }
 }
 
 init()
