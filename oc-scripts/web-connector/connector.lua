@@ -57,6 +57,8 @@ end
 
 local lastCatalog = nil
 local lastCatalogTime = 0
+local lastTargetsStr = nil
+local lastSentSleep = nil
 
 while true do
   local stockData = ask("requeststock")
@@ -80,11 +82,15 @@ while true do
       sleep = cfg.poll_interval,
     })
     if result and result.targets then
-      if #result.targets > 0 then
-        log("synced " .. #result.targets .. " targets")
+      local targetStr = serialization.serialize(result.targets)
+      if targetStr ~= lastTargetsStr then
+        lastTargetsStr = targetStr
         pushTargets(result.targets)
-      else
-        log("synced, no targets set yet")
+        log("targets updated")
+      end
+      if result.maintainer_sleep and result.maintainer_sleep ~= lastSentSleep then
+        lastSentSleep = result.maintainer_sleep
+        tunnel.send("setsleep:" .. result.maintainer_sleep)
       end
     else
       log("sync failed")

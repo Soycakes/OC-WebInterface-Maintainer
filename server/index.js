@@ -17,7 +17,8 @@ function withIcons(targets) {
 import {
   getTargets, upsertTarget, deleteTarget,
   getStock, getCatalog, getNetworks,
-  updateStock, updateCatalog
+  updateStock, updateCatalog,
+  getSettings, setSettings
 } from './db.js'
 
 if (!process.env.BROWSER_PASSWORD) {
@@ -80,9 +81,10 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
   const { network_id, stock, catalog, sleep } = req.body
   if (!network_id) return res.status(400).json({ error: 'network_id required' })
   if (stock) updateStock(network_id, stock)
-  if (catalog) updateCatalog(network_id, catalog)
-  if (stock) broadcast({ type: 'stock', network_id, stock, sleep })
-  res.json({ targets: withIcons(getTargets(network_id)).filter(t => t.enabled !== 0) })
+  if (catalog) { updateCatalog(network_id, catalog); broadcast({ type: 'catalog', network_id, catalog }) }
+  if (stock) broadcast({ type: 'stock', network_id, stock })
+  const settings = getSettings(network_id)
+  res.json({ targets: withIcons(getTargets(network_id)).filter(t => t.enabled !== 0), maintainer_sleep: settings.maintainer_sleep })
 })
 
 
@@ -150,6 +152,17 @@ app.get('/api/stock/:networkId', browserAuth, (req, res) => {
 
 app.get('/api/catalog/:networkId', browserAuth, (req, res) => {
   res.json(getCatalog(req.params.networkId))
+})
+
+app.get('/api/settings/:networkId', browserAuth, (req, res) => {
+  res.json(getSettings(req.params.networkId))
+})
+
+app.put('/api/settings/:networkId', browserAuth, (req, res) => {
+  const sleep = Number(req.body.maintainer_sleep)
+  if (!Number.isFinite(sleep) || sleep < 1) return res.status(400).json({ error: 'invalid' })
+  setSettings(req.params.networkId, { maintainer_sleep: Math.floor(sleep) })
+  res.json({ ok: true })
 })
 
 wss.on('connection', (ws) => {

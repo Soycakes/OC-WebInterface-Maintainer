@@ -68,9 +68,7 @@ function ae2.requestItem(name, threshold, batch, fluidName)
     else
       count = itemCount(craftable)
     end
-    if count >= threshold then
-      return false, (getStack(craftable).label or name) .. " at " .. count .. " meets threshold " .. threshold
-    end
+    if count >= threshold then return end
   end
   local item = getStack(craftable)
   if item.label ~= name then
@@ -102,9 +100,7 @@ function ae2.requestFluid(name, threshold, batch, fluidName)
     if fluidName then
       local fluid = ME.getFluidInNetwork(fluidName)
       local amount = fluid and (fluid.size or fluid.amount) or 0
-      if amount >= threshold then
-        return false, (fluid and fluid.label or name) .. " at " .. amount .. " mB meets threshold " .. threshold .. " mB"
-      end
+      if amount >= threshold then return end
     end
   end
   local craft = craftable.request(batch)

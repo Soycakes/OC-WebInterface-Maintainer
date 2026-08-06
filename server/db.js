@@ -27,6 +27,11 @@ db.exec(`
     PRIMARY KEY (network_id, label)
   );
 
+  CREATE TABLE IF NOT EXISTS settings (
+    network_id TEXT PRIMARY KEY,
+    maintainer_sleep INTEGER NOT NULL DEFAULT 5
+  );
+
 `)
 
 try { db.exec(`ALTER TABLE targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`) } catch {}
@@ -51,7 +56,9 @@ const q = {
     INSERT INTO stock (network_id, label, count) VALUES (?, ?, ?)
     ON CONFLICT(network_id, label) DO UPDATE SET count = excluded.count
   `),
-  upsertCatalog: db.prepare('INSERT OR IGNORE INTO catalog (network_id, label) VALUES (?, ?)')
+  upsertCatalog: db.prepare('INSERT OR IGNORE INTO catalog (network_id, label) VALUES (?, ?)'),
+  getSettings: db.prepare('SELECT maintainer_sleep FROM settings WHERE network_id = ?'),
+  setSettings: db.prepare('INSERT INTO settings (network_id, maintainer_sleep) VALUES (?, ?) ON CONFLICT(network_id) DO UPDATE SET maintainer_sleep = excluded.maintainer_sleep')
 }
 
 export function getTargets(networkId) {
@@ -92,6 +99,14 @@ export function updateStock(networkId, stock) {
       q.upsertStock.run(networkId, label, count)
     }
   })()
+}
+
+export function getSettings(networkId) {
+  return q.getSettings.get(networkId) ?? { maintainer_sleep: 5 }
+}
+
+export function setSettings(networkId, settings) {
+  q.setSettings.run(networkId, settings.maintainer_sleep)
 }
 
 export function updateCatalog(networkId, labels) {

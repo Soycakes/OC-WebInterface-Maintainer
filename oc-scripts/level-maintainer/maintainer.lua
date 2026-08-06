@@ -9,6 +9,7 @@ local tunnel = component.tunnel
 
 local items = cfg.items or {}
 local fluids = cfg.fluids or {}
+local currentSleep = cfg.sleep or 5
 
 if fluids and next(fluids) and not ae2.hasFluidSupport() then
   print("WARNING: fluids configured but ME interface does not support getFluidInNetwork (needs GTNH 2.9+). Fluids skipped.")
@@ -16,25 +17,39 @@ if fluids and next(fluids) and not ae2.hasFluidSupport() then
 end
 
 local catalogCache = nil
-local catalogTime = 0
-local CATALOG_TTL = 300
+local lastCraftableCount = nil
 
 local function log(msg)
   print("[" .. os.date("%H:%M:%S") .. "] " .. tostring(msg))
 end
 
-local function catalog()
-  local now = os.time()
-  if catalogCache and now - catalogTime < CATALOG_TTL then return catalogCache end
-  local craftables = component.me_interface.getCraftables()
+local function buildCatalog(craftables)
   local labels = {}
   for i = 1, #craftables do
     local stack = (craftables[i].getStack or craftables[i].getItemStack)(craftables[i])
     if stack and stack.label then labels[#labels + 1] = stack.label end
   end
-  catalogCache = labels
-  catalogTime = now
   return labels
+end
+
+local function catalog()
+  if catalogCache then return catalogCache end
+  local craftables = component.me_interface.getCraftables()
+  lastCraftableCount = #craftables
+  catalogCache = buildCatalog(craftables)
+  return catalogCache
+end
+
+local function checkCatalogChanged()
+  local craftables = component.me_interface.getCraftables()
+  local count = #craftables
+  if lastCraftableCount ~= nil and count ~= lastCraftableCount then
+    lastCraftableCount = count
+    catalogCache = buildCatalog(craftables)
+    log("catalog updated: " .. count .. " craftables")
+  elseif lastCraftableCount == nil then
+    lastCraftableCount = count
+  end
 end
 
 local function stock()
@@ -57,6 +72,14 @@ local function handleModem(_, _, _, _, _, msg)
     tunnel.send(serialization.serialize({ catalog = catalog() }))
     return
   end
+  if msg:sub(1, 8) == "setsleep" then
+    local n = tonumber(msg:sub(10))
+    if n and n >= 1 then
+      currentSleep = n
+      log("sleep set to " .. n .. "s")
+    end
+    return
+  end
   local data = serialization.unserialize(msg)
   if type(data) ~= "table" or not data.targets then return end
   items = {}
@@ -73,7 +96,7 @@ local function handleModem(_, _, _, _, _, msg)
 end
 
 while true do
-  local deadline = computer.uptime() + (cfg.sleep or 5)
+  local deadline = computer.uptime() + currentSleep
 
   while computer.uptime() < deadline do
     local remaining = deadline - computer.uptime()
@@ -81,23 +104,20 @@ while true do
     if msg then handleModem(nil, nil, nil, nil, nil, msg) end
   end
 
+  checkCatalogChanged()
   local active = ae2.crafting()
 
   for label, config in pairs(items) do
-    if active[label] then
-      log(label .. " already crafting, skipping")
-    else
+    if not active[label] then
       local _, msg = ae2.requestItem(label, config[1], config[2], config[3])
-      log(msg)
+      if msg then log(msg) end
     end
   end
 
   for label, config in pairs(fluids) do
-    if active[label] then
-      log(label .. " already crafting, skipping")
-    else
+    if not active[label] then
       local _, msg = ae2.requestFluid(label, config[1], config[2], config[3])
-      log(msg)
+      if msg then log(msg) end
     end
   end
 end

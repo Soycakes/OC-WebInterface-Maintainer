@@ -17,9 +17,11 @@ let stock = {}
 let networks = []
 let catalog = []
 let registry = []
-let sleepInterval = null
 const timers = {}
 let statusMsg = ''
+let statusTimer = null
+let sleepTimer = null
+let maintainerSleep = 5
 let pendingAdd = null
 
 function formatCount(n) {
@@ -39,10 +41,12 @@ function iconHtml(x, y) {
   return `<span class="gtnh-icon" style="${iconStyle(x, y)}"></span>`
 }
 
-function setStatus(msg) {
-  statusMsg = msg
+function setStatus(text) {
+  clearTimeout(statusTimer)
+  statusMsg = text
   const el = document.getElementById('status')
-  if (el) el.textContent = msg
+  if (el) el.textContent = text
+  if (text) statusTimer = setTimeout(() => setStatus(''), 3000)
 }
 
 async function fetchNetworks() {
@@ -70,6 +74,12 @@ async function fetchCatalog() {
 async function fetchRegistry() {
   const res = await fetch('/gtnh_registry.json')
   registry = await res.json()
+}
+
+async function fetchSettings() {
+  const res = await fetch(`/api/settings/${networkId}`)
+  const data = await res.json()
+  maintainerSleep = data.maintainer_sleep ?? 5
 }
 
 function showLogin() {
@@ -241,10 +251,10 @@ function connectWs() {
 
     if (msg.type === 'stock') {
       stock = msg.stock
-      if (msg.sleep) sleepInterval = msg.sleep
       updateStockCells()
-      const el = document.getElementById('sleep-interval')
-      if (el) el.textContent = sleepInterval ? `Syncing every ${sleepInterval}s` : ''
+    }
+    if (msg.type === 'catalog') {
+      catalog = msg.catalog
     }
     if (msg.type === 'targets') {
       targets = msg.targets
@@ -259,9 +269,9 @@ function updateStockCells() {
   for (const t of targets) {
     const cell = document.getElementById(`stock-${t.label}`)
     if (cell) {
-      const count = stock[t.label] ?? 0
-      cell.textContent = formatCount(count)
-      cell.title = String(count)
+      const count = stock[t.label]
+      cell.textContent = count === undefined ? '...' : formatCount(count)
+      cell.title = count === undefined ? 'Loading...' : String(count)
     }
   }
 }
@@ -269,13 +279,29 @@ function updateStockCells() {
 function render() {
   app.innerHTML = `
     <div>
-      <h1>OC Level Maintainer</h1>
+      <div class="page-header">
+        <h1>OC Level Maintainer</h1>
+        <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="1" value="${maintainerSleep}"> s</label>
+      </div>
       <p id="status">${statusMsg}</p>
-      <p id="sleep-interval">${sleepInterval ? `Syncing every ${sleepInterval}s` : ''}</p>
       <div id="network-bar"></div>
       <div id="table-container"></div>
     </div>
   `
+
+  document.getElementById('sleep-input').addEventListener('input', (e) => {
+    const val = Math.max(1, Math.floor(Number(e.target.value)))
+    if (!val) return
+    clearTimeout(sleepTimer)
+    sleepTimer = setTimeout(async () => {
+      await fetch(`/api/settings/${networkId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maintainer_sleep: val })
+      })
+      maintainerSleep = val
+    }, 2000)
+  })
 
   renderNetworkBar()
   renderTable()
@@ -284,10 +310,7 @@ function render() {
 function renderNetworkBar() {
   const bar = document.getElementById('network-bar')
 
-  if (networks.length <= 1) {
-    bar.innerHTML = `<p>Network: <strong>${networkId}</strong></p>`
-    return
-  }
+  if (networks.length <= 1) return
 
   bar.innerHTML = `
     <label>Network:
@@ -308,7 +331,9 @@ function renderTable() {
   const container = document.getElementById('table-container')
 
   const rows = targets.map(t => {
-    const count = stock[t.label] ?? 0
+    const count = stock[t.label]
+    const stockDisplay = count === undefined ? '...' : formatCount(count)
+    const stockTitle = count === undefined ? 'Loading...' : String(count)
     const thresholdVal = t.threshold === null ? '' : t.threshold
     const batchVal = t.batch_size ?? 1
     const enabled = t.enabled !== 0
@@ -327,7 +352,7 @@ function renderTable() {
             <span>${t.label}</span>
           </div>
         </td>
-        <td id="stock-${t.label}" title="${count}">${formatCount(count)}</td>
+        <td id="stock-${t.label}" title="${stockTitle}">${stockDisplay}</td>
         <td>
           <input type="number" value="${thresholdVal}" placeholder="infinite"
             data-label="${t.label}" data-field="threshold">
@@ -444,7 +469,7 @@ async function init() {
     networks = await fetchNetworks()
     if (networks === null) { showLogin(); return }
     networkId = networks[0] || 'main'
-    await Promise.all([fetchTargets(), fetchStock(), fetchCatalog(), fetchRegistry()])
+    await Promise.all([fetchTargets(), fetchStock(), fetchCatalog(), fetchRegistry(), fetchSettings()])
     render()
     connectWs()
   } catch {

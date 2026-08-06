@@ -141,6 +141,25 @@ button:disabled {
   min-height: 1.4em;
 }
 
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.sleep-setting {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #aaa;
+  font-size: 0.9em;
+}
+
+.sleep-setting input {
+  width: 56px;
+}
+
 /* Item picker overlay */
 .picker-overlay {
   position: fixed;
