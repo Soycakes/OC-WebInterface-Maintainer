@@ -2,11 +2,32 @@ import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
+import { randomBytes } from 'crypto'
 import {
   getTargets, upsertTarget, deleteTarget,
   getStock, getCatalog, getNetworks,
   updateStock, updateCatalog
 } from './db.js'
+
+if (!process.env.BROWSER_PASSWORD) {
+  console.log('WARNING : No BROWSER_PASSWORD in .env, anyone can access the page with link!')
+}
+
+const sessions = new Set()
+
+function parseCookie(req, name) {
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const [k, v] = part.trim().split('=')
+    if (k === name) return v
+  }
+  return null
+}
+
+function browserAuth(req, res, next) {
+  if (!process.env.BROWSER_PASSWORD) return next()
+  if (sessions.has(parseCookie(req, 'session'))) return next()
+  res.status(401).end()
+}
 
 const app = express()
 app.use(express.json())
@@ -53,11 +74,19 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
   res.json({ targets: getTargets(network_id) })
 })
 
-app.get('/api/networks', (req, res) => {
+app.post('/api/login', (req, res) => {
+  if (req.body.password !== process.env.BROWSER_PASSWORD) return res.status(401).end()
+  const token = randomBytes(16).toString('hex')
+  sessions.add(token)
+  res.cookie('session', token, { httpOnly: true })
+  res.json({ ok: true })
+})
+
+app.get('/api/networks', browserAuth, (req, res) => {
   res.json(getNetworks())
 })
 
-app.get('/api/targets/:networkId', (req, res) => {
+app.get('/api/targets/:networkId', browserAuth, (req, res) => {
   res.json(getTargets(req.params.networkId))
 })
 
@@ -76,7 +105,7 @@ function parseTarget(body) {
   }
 }
 
-app.post('/api/targets/:networkId', (req, res) => {
+app.post('/api/targets/:networkId', browserAuth, (req, res) => {
   const { label } = req.body
   if (!label || typeof label !== 'string' || !label.trim()) {
     return res.status(400).json({ error: 'label required' })
@@ -88,7 +117,7 @@ app.post('/api/targets/:networkId', (req, res) => {
   res.json({ ok: true })
 })
 
-app.put('/api/targets/:networkId/:label', (req, res) => {
+app.put('/api/targets/:networkId/:label', browserAuth, (req, res) => {
   const target = parseTarget({ ...req.body, label: req.params.label })
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
   upsertTarget(req.params.networkId, target)
@@ -96,17 +125,17 @@ app.put('/api/targets/:networkId/:label', (req, res) => {
   res.json({ ok: true })
 })
 
-app.delete('/api/targets/:networkId/:label', (req, res) => {
+app.delete('/api/targets/:networkId/:label', browserAuth, (req, res) => {
   deleteTarget(req.params.networkId, req.params.label)
   broadcast({ type: 'targets', network_id: req.params.networkId, targets: getTargets(req.params.networkId) })
   res.json({ ok: true })
 })
 
-app.get('/api/stock/:networkId', (req, res) => {
+app.get('/api/stock/:networkId', browserAuth, (req, res) => {
   res.json(getStock(req.params.networkId))
 })
 
-app.get('/api/catalog/:networkId', (req, res) => {
+app.get('/api/catalog/:networkId', browserAuth, (req, res) => {
   res.json(getCatalog(req.params.networkId))
 })
 

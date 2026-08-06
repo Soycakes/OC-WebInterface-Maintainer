@@ -25,6 +25,7 @@ db.exec(`
     label TEXT NOT NULL,
     PRIMARY KEY (network_id, label)
   );
+
 `)
 
 const q = {

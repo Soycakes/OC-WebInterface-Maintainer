@@ -7,7 +7,8 @@ const msg = {
   serverUnreachable: 'Save failed: server unreachable.',
   addFailed: 'Failed to add target: server unreachable.',
   deleteFailed: 'Failed to delete target: server unreachable.',
-  serverDown: 'Failed to connect to server. Is it running?'
+  serverDown: 'Failed to connect to server. Is it running?',
+  loginFailed: 'Wrong password.'
 }
 
 let networkId = null
@@ -25,7 +26,32 @@ function setStatus(msg) {
 
 async function fetchNetworks() {
   const res = await fetch('/api/networks')
+  if (res.status === 401) return null
   return res.json()
+}
+
+function showLogin() {
+  app.innerHTML = `
+    <div>
+      <h1>OC Level Maintainer</h1>
+      <p id="login-error"></p>
+      <input id="login-password" type="password" placeholder="Password">
+      <button id="login-btn">Login</button>
+    </div>
+  `
+  document.getElementById('login-btn').onclick = async () => {
+    const password = document.getElementById('login-password').value
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    })
+    if (res.ok) {
+      init()
+    } else {
+      document.getElementById('login-error').textContent = msg.loginFailed
+    }
+  }
 }
 
 async function fetchTargets() {
@@ -274,6 +300,7 @@ function renderAddRow() {
 async function init() {
   try {
     networks = await fetchNetworks()
+    if (networks === null) { showLogin(); return }
     networkId = networks[0] || 'main'
     await Promise.all([fetchTargets(), fetchStock()])
     render()
