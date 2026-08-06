@@ -15,6 +15,19 @@ app.use(express.static('public'))
 const server = createServer(app)
 const wss = new WebSocketServer({ server })
 
+const lastSync = {}
+
+function rateLimit(req, res, next) {
+  const id = req.body?.network_id
+  if (!id) return next()
+  const now = Date.now()
+  if (lastSync[id] && now - lastSync[id] < 2000) {
+    return res.status(429).end()
+  }
+  lastSync[id] = now
+  next()
+}
+
 function auth(req, res, next) {
   const key = process.env.API_KEY
   if (!key) return next()
@@ -31,7 +44,7 @@ function broadcast(data) {
   }
 }
 
-app.post('/api/sync', auth, (req, res) => {
+app.post('/api/sync', auth, rateLimit, (req, res) => {
   const { network_id, stock, catalog } = req.body
   if (!network_id) return res.status(400).json({ error: 'network_id required' })
   if (stock) updateStock(network_id, stock)
