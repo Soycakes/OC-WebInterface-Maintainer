@@ -77,6 +77,7 @@ while true do
       network_id = cfg.network_id,
       stock = stockData.stock,
       catalog = lastCatalog,
+      sleep = cfg.poll_interval,
     })
     if result and result.targets then
       if #result.targets > 0 then

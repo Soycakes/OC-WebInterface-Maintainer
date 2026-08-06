@@ -66,11 +66,11 @@ function broadcast(data) {
 }
 
 app.post('/api/sync', auth, rateLimit, (req, res) => {
-  const { network_id, stock, catalog } = req.body
+  const { network_id, stock, catalog, sleep } = req.body
   if (!network_id) return res.status(400).json({ error: 'network_id required' })
   if (stock) updateStock(network_id, stock)
   if (catalog) updateCatalog(network_id, catalog)
-  if (stock) broadcast({ type: 'stock', network_id, stock })
+  if (stock) broadcast({ type: 'stock', network_id, stock, sleep })
   res.json({ targets: getTargets(network_id) })
 })
 

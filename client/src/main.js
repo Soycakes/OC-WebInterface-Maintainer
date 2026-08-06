@@ -15,8 +15,16 @@ let networkId = null
 let targets = []
 let stock = {}
 let networks = []
+let sleepInterval = null
 const timers = {}
 let statusMsg = ''
+
+function formatCount(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'b'
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'm'
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k'
+  return String(n)
+}
 
 function setStatus(msg) {
   statusMsg = msg
@@ -61,7 +69,8 @@ async function fetchTargets() {
 
 async function fetchStock() {
   const res = await fetch(`/api/stock/${networkId}`)
-  stock = await res.json()
+  const rows = await res.json()
+  stock = Object.fromEntries(rows.map(r => [r.label, r.count]))
 }
 
 async function saveTarget(label, data) {
@@ -128,7 +137,10 @@ function connectWs() {
 
     if (msg.type === 'stock') {
       stock = msg.stock
+      if (msg.sleep) sleepInterval = msg.sleep
       updateStockCells()
+      const el = document.getElementById('sleep-interval')
+      if (el) el.textContent = sleepInterval ? `Syncing every ${sleepInterval}s` : ''
     }
     if (msg.type === 'targets') {
       targets = msg.targets
@@ -142,7 +154,11 @@ function connectWs() {
 function updateStockCells() {
   for (const t of targets) {
     const cell = document.getElementById(`stock-${t.label}`)
-    if (cell) cell.textContent = stock[t.label] ?? 0
+    if (cell) {
+      const count = stock[t.label] ?? 0
+      cell.textContent = formatCount(count)
+      cell.title = String(count)
+    }
   }
 }
 
@@ -151,6 +167,7 @@ function render() {
     <div>
       <h1>OC Level Maintainer</h1>
       <p id="status">${statusMsg}</p>
+      <p id="sleep-interval">${sleepInterval ? `Syncing every ${sleepInterval}s` : ''}</p>
       <div id="network-bar"></div>
       <div id="table-container"></div>
       <div id="add-row"></div>
@@ -196,12 +213,12 @@ function renderTable() {
     return `
       <tr>
         <td>${t.label}</td>
-        <td id="stock-${t.label}">${count}</td>
+        <td id="stock-${t.label}" title="${count}">${formatCount(count)}</td>
         <td>
           <input
             type="number"
             value="${thresholdVal}"
-            placeholder="blank = infinite"
+            placeholder="infinite"
             data-label="${t.label}"
             data-field="threshold"
           >
