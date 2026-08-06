@@ -8,7 +8,7 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const dir = dirname(fileURLToPath(import.meta.url))
-const itemRegistry = JSON.parse(readFileSync(resolve(dir, 'data/gtnh_registry.json'), 'utf8'))
+const itemRegistry = JSON.parse(readFileSync(resolve(dir, '../client/public/gtnh_registry.json'), 'utf8'))
 const iconMap = new Map(itemRegistry.map(i => [i.label, { x: i.x, y: i.y }]))
 
 function withIcons(targets) {
@@ -82,15 +82,9 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
   if (stock) updateStock(network_id, stock)
   if (catalog) updateCatalog(network_id, catalog)
   if (stock) broadcast({ type: 'stock', network_id, stock, sleep })
-  res.json({ targets: withIcons(getTargets(network_id)) })
+  res.json({ targets: withIcons(getTargets(network_id)).filter(t => t.enabled !== 0) })
 })
 
-app.get('/api/items/search', browserAuth, (req, res) => {
-  const q = (req.query.q ?? '').toLowerCase().trim()
-  if (!q) return res.json([])
-  const results = itemRegistry.filter(i => i.label.toLowerCase().includes(q)).slice(0, 20)
-  res.json(results)
-})
 
 app.post('/api/login', (req, res) => {
   if (req.body.password !== process.env.BROWSER_PASSWORD) return res.status(401).end()
@@ -109,7 +103,7 @@ app.get('/api/targets/:networkId', browserAuth, (req, res) => {
 })
 
 function parseTarget(body) {
-  const { label, threshold, batch_size, fluid_tag, is_fluid } = body
+  const { label, threshold, batch_size, fluid_tag, is_fluid, enabled } = body
   const parsedThreshold = threshold === null || threshold === undefined || threshold === '' ? null : Number(threshold)
   const parsedBatch = Number(batch_size ?? 1)
   if (parsedThreshold !== null && !Number.isFinite(parsedThreshold)) return null
@@ -119,7 +113,8 @@ function parseTarget(body) {
     threshold: parsedThreshold,
     batch_size: Math.floor(parsedBatch),
     fluid_tag: fluid_tag ?? null,
-    is_fluid: Boolean(is_fluid)
+    is_fluid: Boolean(is_fluid),
+    enabled: enabled !== false
   }
 }
 

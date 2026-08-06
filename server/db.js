@@ -10,6 +10,7 @@ db.exec(`
     batch_size INTEGER NOT NULL DEFAULT 1,
     fluid_tag TEXT,
     is_fluid INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (network_id, label)
   );
 
@@ -28,16 +29,19 @@ db.exec(`
 
 `)
 
+try { db.exec(`ALTER TABLE targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`) } catch {}
+
 const q = {
   getTargets: db.prepare('SELECT * FROM targets WHERE network_id = ?'),
   upsertTarget: db.prepare(`
-    INSERT INTO targets (network_id, label, threshold, batch_size, fluid_tag, is_fluid)
-    VALUES (@network_id, @label, @threshold, @batch_size, @fluid_tag, @is_fluid)
+    INSERT INTO targets (network_id, label, threshold, batch_size, fluid_tag, is_fluid, enabled)
+    VALUES (@network_id, @label, @threshold, @batch_size, @fluid_tag, @is_fluid, @enabled)
     ON CONFLICT(network_id, label) DO UPDATE SET
       threshold = excluded.threshold,
       batch_size = excluded.batch_size,
       fluid_tag = excluded.fluid_tag,
-      is_fluid = excluded.is_fluid
+      is_fluid = excluded.is_fluid,
+      enabled = excluded.enabled
   `),
   deleteTarget: db.prepare('DELETE FROM targets WHERE network_id = ? AND label = ?'),
   getStock: db.prepare('SELECT * FROM stock WHERE network_id = ?'),
@@ -61,7 +65,8 @@ export function upsertTarget(networkId, target) {
     threshold: target.threshold ?? null,
     batch_size: target.batch_size ?? 1,
     fluid_tag: target.fluid_tag ?? null,
-    is_fluid: target.is_fluid ? 1 : 0
+    is_fluid: target.is_fluid ? 1 : 0,
+    enabled: target.enabled === false ? 0 : 1
   })
 }
 

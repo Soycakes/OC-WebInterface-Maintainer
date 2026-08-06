@@ -15,9 +15,12 @@ let networkId = null
 let targets = []
 let stock = {}
 let networks = []
+let catalog = []
+let registry = []
 let sleepInterval = null
 const timers = {}
 let statusMsg = ''
+let pendingAdd = null
 
 function formatCount(n) {
   if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'b'
@@ -31,6 +34,11 @@ function iconStyle(x, y) {
   return `background-position: -${x}px -${y}px`
 }
 
+function iconHtml(x, y) {
+  if (x === undefined || y === undefined) return '<span class="gtnh-icon gtnh-icon-missing"></span>'
+  return `<span class="gtnh-icon" style="${iconStyle(x, y)}"></span>`
+}
+
 function setStatus(msg) {
   statusMsg = msg
   const el = document.getElementById('status')
@@ -41,6 +49,27 @@ async function fetchNetworks() {
   const res = await fetch('/api/networks')
   if (res.status === 401) return null
   return res.json()
+}
+
+async function fetchTargets() {
+  const res = await fetch(`/api/targets/${networkId}`)
+  targets = await res.json()
+}
+
+async function fetchStock() {
+  const res = await fetch(`/api/stock/${networkId}`)
+  const rows = await res.json()
+  stock = Object.fromEntries(rows.map(r => [r.label, r.count]))
+}
+
+async function fetchCatalog() {
+  const res = await fetch(`/api/catalog/${networkId}`)
+  catalog = await res.json()
+}
+
+async function fetchRegistry() {
+  const res = await fetch('/gtnh_registry.json')
+  registry = await res.json()
 }
 
 function showLogin() {
@@ -65,17 +94,6 @@ function showLogin() {
       document.getElementById('login-error').textContent = msg.loginFailed
     }
   }
-}
-
-async function fetchTargets() {
-  const res = await fetch(`/api/targets/${networkId}`)
-  targets = await res.json()
-}
-
-async function fetchStock() {
-  const res = await fetch(`/api/stock/${networkId}`)
-  const rows = await res.json()
-  stock = Object.fromEntries(rows.map(r => [r.label, r.count]))
 }
 
 async function saveTarget(label, data) {
@@ -104,6 +122,7 @@ async function addTarget(label, threshold, batchSize, isFluid) {
       })
     })
     await fetchTargets()
+    pendingAdd = null
     render()
   } catch {
     setStatus(msg.addFailed)
@@ -114,13 +133,33 @@ async function removeTarget(label) {
   clearTimeout(timers[label])
   delete timers[label]
   try {
-    await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
-      method: 'DELETE'
-    })
+    await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, { method: 'DELETE' })
     await fetchTargets()
     render()
   } catch {
     setStatus(msg.deleteFailed)
+  }
+}
+
+async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
+  const old = targets.find(t => t.label === oldLabel)
+  try {
+    await fetch(`/api/targets/${networkId}/${encodeURIComponent(oldLabel)}`, { method: 'DELETE' })
+    await fetch(`/api/targets/${networkId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label: newLabel,
+        threshold: old?.threshold ?? null,
+        batch_size: old?.batch_size ?? 1,
+        is_fluid: newIsFluid,
+        enabled: old?.enabled !== 0
+      })
+    })
+    await fetchTargets()
+    render()
+  } catch {
+    setStatus(msg.saveFailed)
   }
 }
 
@@ -130,6 +169,66 @@ function scheduleUpdate(label, getData) {
   timers[label] = setTimeout(async () => {
     await saveTarget(label, getData())
   }, 5000)
+}
+
+function openItemPicker(onSelect) {
+  const catalogSet = new Set(catalog)
+
+  const overlay = document.createElement('div')
+  overlay.className = 'picker-overlay'
+  overlay.innerHTML = `
+    <div class="picker-modal">
+      <div class="picker-header">
+        <input id="picker-search" type="text" placeholder="Search items..." autocomplete="off">
+        <button id="picker-close">X</button>
+      </div>
+      <div id="picker-grid" class="picker-grid"></div>
+    </div>
+  `
+  document.body.appendChild(overlay)
+
+  const searchInput = overlay.querySelector('#picker-search')
+  const grid = overlay.querySelector('#picker-grid')
+
+  function renderResults(items) {
+    grid.innerHTML = items.slice(0, 64).map(i => `
+      <div class="picker-item" data-label="${i.label}" data-fluid="${i.is_fluid}" title="${i.label}">
+        ${iconHtml(i.x, i.y)}
+        <span class="picker-item-name">${i.label}</span>
+      </div>
+    `).join('')
+
+    grid.querySelectorAll('.picker-item').forEach(el => {
+      el.onclick = () => {
+        onSelect({ label: el.dataset.label, is_fluid: el.dataset.fluid === 'true' })
+        overlay.remove()
+      }
+    })
+  }
+
+  function search(q) {
+    if (!q) {
+      const catalogItems = registry.filter(i => catalogSet.has(i.label))
+      renderResults(catalogItems)
+      return
+    }
+    const lower = q.toLowerCase()
+    const results = registry
+      .filter(i => i.label.toLowerCase().includes(lower))
+      .sort((a, b) => {
+        const ac = catalogSet.has(a.label) ? 0 : 1
+        const bc = catalogSet.has(b.label) ? 0 : 1
+        return ac - bc
+      })
+    renderResults(results)
+  }
+
+  search('')
+  searchInput.addEventListener('input', () => search(searchInput.value.trim()))
+
+  overlay.querySelector('#picker-close').onclick = () => overlay.remove()
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove() }
+  searchInput.focus()
 }
 
 function connectWs() {
@@ -175,13 +274,11 @@ function render() {
       <p id="sleep-interval">${sleepInterval ? `Syncing every ${sleepInterval}s` : ''}</p>
       <div id="network-bar"></div>
       <div id="table-container"></div>
-      <div id="add-row"></div>
     </div>
   `
 
   renderNetworkBar()
   renderTable()
-  renderAddRow()
 }
 
 function renderNetworkBar() {
@@ -202,7 +299,7 @@ function renderNetworkBar() {
 
   document.getElementById('network-select').onchange = async (e) => {
     networkId = e.target.value
-    await Promise.all([fetchTargets(), fetchStock()])
+    await Promise.all([fetchTargets(), fetchStock(), fetchCatalog()])
     render()
   }
 }
@@ -214,38 +311,30 @@ function renderTable() {
     const count = stock[t.label] ?? 0
     const thresholdVal = t.threshold === null ? '' : t.threshold
     const batchVal = t.batch_size ?? 1
-    const icon = t.x !== undefined
-      ? `<span class="gtnh-icon" style="${iconStyle(t.x, t.y)}"></span>`
-      : ''
+    const enabled = t.enabled !== 0
+    const dimmed = enabled ? '' : 'style="opacity:0.35"'
 
     return `
-      <tr>
-        <td>${icon} ${t.label}</td>
+      <tr ${dimmed}>
+        <td>
+          <button class="mc-toggle ${enabled ? 'mc-toggle-on' : ''}" data-toggle="${t.label}">
+            ${enabled ? '✓' : ''}
+          </button>
+        </td>
+        <td>
+          <div class="item-slot" data-change="${t.label}">
+            ${iconHtml(t.x, t.y)}
+            <span>${t.label}</span>
+          </div>
+        </td>
         <td id="stock-${t.label}" title="${count}">${formatCount(count)}</td>
         <td>
-          <input
-            type="number"
-            value="${thresholdVal}"
-            placeholder="infinite"
-            data-label="${t.label}"
-            data-field="threshold"
-          >
+          <input type="number" value="${thresholdVal}" placeholder="infinite"
+            data-label="${t.label}" data-field="threshold">
         </td>
         <td>
-          <input
-            type="number"
-            value="${batchVal}"
-            data-label="${t.label}"
-            data-field="batch_size"
-          >
-        </td>
-        <td>
-          <input
-            type="checkbox"
-            ${t.is_fluid ? 'checked' : ''}
-            data-label="${t.label}"
-            data-field="is_fluid"
-          >
+          <input type="number" value="${batchVal}"
+            data-label="${t.label}" data-field="batch_size">
         </td>
         <td>
           <button data-delete="${t.label}">Delete</button>
@@ -254,108 +343,99 @@ function renderTable() {
     `
   }).join('')
 
+  const slotHtml = pendingAdd
+    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${pendingAdd.label}</span></div>`
+    : `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
+
+  const addRow = `
+    <tr>
+      <td></td>
+      <td>${slotHtml}</td>
+      <td></td>
+      <td><input id="add-threshold" type="number" placeholder="infinite" ${pendingAdd ? '' : 'disabled'}></td>
+      <td><input id="add-batch" type="number" placeholder="1" value="1" ${pendingAdd ? '' : 'disabled'}></td>
+      <td><button id="add-btn" ${pendingAdd ? '' : 'disabled'}>Add</button></td>
+    </tr>
+  `
+
   container.innerHTML = `
     <table>
       <thead>
         <tr>
+          <th></th>
           <th>Item</th>
           <th>Stock</th>
           <th>Threshold</th>
           <th>Batch size</th>
-          <th>Fluid</th>
           <th></th>
         </tr>
       </thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rows}${addRow}</tbody>
     </table>
   `
 
   container.querySelectorAll('input[data-field]').forEach(input => {
-    input.addEventListener('input', () => {
+    const handler = () => {
       const label = input.dataset.label
       scheduleUpdate(label, () => getRowData(label))
-    })
-    input.addEventListener('change', () => {
-      const label = input.dataset.label
-      scheduleUpdate(label, () => getRowData(label))
-    })
+    }
+    input.addEventListener('input', handler)
+    input.addEventListener('change', handler)
   })
 
   container.querySelectorAll('[data-delete]').forEach(btn => {
     btn.addEventListener('click', () => removeTarget(btn.dataset.delete))
   })
+
+  container.querySelectorAll('[data-toggle]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const label = btn.dataset.toggle
+      const t = targets.find(t => t.label === label)
+      if (!t) return
+      saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 })
+        .then(fetchTargets)
+        .then(render)
+    })
+  })
+
+  container.querySelectorAll('[data-change]').forEach(slot => {
+    slot.addEventListener('click', () => {
+      const label = slot.dataset.change
+      openItemPicker(({ label: newLabel, is_fluid }) => {
+        if (newLabel !== label) changeTargetItem(label, newLabel, is_fluid)
+      })
+    })
+  })
+
+  document.getElementById('add-slot').onclick = () => {
+    openItemPicker(item => {
+      const reg = registry.find(i => i.label === item.label)
+      pendingAdd = { ...item, x: reg?.x, y: reg?.y }
+      renderTable()
+    })
+  }
+
+  if (pendingAdd) {
+    document.getElementById('add-btn').onclick = () => {
+      addTarget(
+        pendingAdd.label,
+        document.getElementById('add-threshold').value,
+        document.getElementById('add-batch').value || 1,
+        pendingAdd.is_fluid
+      )
+    }
+  }
 }
 
 function getRowData(label) {
   const thresholdInput = document.querySelector(`input[data-label="${CSS.escape(label)}"][data-field="threshold"]`)
   const batchInput = document.querySelector(`input[data-label="${CSS.escape(label)}"][data-field="batch_size"]`)
-  const fluidInput = document.querySelector(`input[data-label="${CSS.escape(label)}"][data-field="is_fluid"]`)
+  const target = targets.find(t => t.label === label)
 
   return {
     threshold: thresholdInput.value === '' ? null : Number(thresholdInput.value),
     batch_size: Number(batchInput.value),
-    is_fluid: fluidInput.checked
-  }
-}
-
-let searchTimer = null
-
-function renderAddRow() {
-  const container = document.getElementById('add-row')
-  container.innerHTML = `
-    <div style="position:relative;display:inline-block">
-      <input id="add-label" type="text" placeholder="Item label" autocomplete="off">
-      <ul id="search-dropdown" style="display:none;position:absolute;z-index:10;background:#222;list-style:none;margin:0;padding:0;width:100%;max-height:200px;overflow-y:auto"></ul>
-    </div>
-    <input id="add-threshold" type="number" placeholder="Threshold (blank = infinite)">
-    <input id="add-batch" type="number" placeholder="Batch size" value="1">
-    <label><input id="add-fluid" type="checkbox"> Fluid</label>
-    <button id="add-btn">Add</button>
-  `
-
-  const labelInput = document.getElementById('add-label')
-  const dropdown = document.getElementById('search-dropdown')
-
-  labelInput.addEventListener('input', () => {
-    clearTimeout(searchTimer)
-    const q = labelInput.value.trim()
-    if (!q) { dropdown.style.display = 'none'; return }
-    searchTimer = setTimeout(async () => {
-      const res = await fetch(`/api/items/search?q=${encodeURIComponent(q)}`)
-      const items = await res.json()
-      if (!items.length) { dropdown.style.display = 'none'; return }
-      dropdown.innerHTML = items.map(i => {
-        const style = iconStyle(i.x, i.y)
-        return `<li data-label="${i.label}" data-fluid="${i.is_fluid}" style="cursor:pointer;padding:4px 8px;display:flex;align-items:center;gap:6px">
-          <span class="gtnh-icon" style="${style}"></span>${i.label}
-        </li>`
-      }).join('')
-      dropdown.style.display = 'block'
-    }, 200)
-  })
-
-  dropdown.addEventListener('click', e => {
-    const li = e.target.closest('li')
-    if (!li) return
-    labelInput.value = li.dataset.label
-    document.getElementById('add-fluid').checked = li.dataset.fluid === 'true'
-    dropdown.style.display = 'none'
-  })
-
-  document.addEventListener('click', e => {
-    if (!container.contains(e.target)) dropdown.style.display = 'none'
-  }, { once: false })
-
-  document.getElementById('add-btn').onclick = () => {
-    const label = document.getElementById('add-label').value.trim()
-    if (!label) return
-    dropdown.style.display = 'none'
-    addTarget(
-      label,
-      document.getElementById('add-threshold').value,
-      document.getElementById('add-batch').value || 1,
-      document.getElementById('add-fluid').checked
-    )
+    is_fluid: target?.is_fluid ?? false
   }
 }
 
@@ -364,7 +444,7 @@ async function init() {
     networks = await fetchNetworks()
     if (networks === null) { showLogin(); return }
     networkId = networks[0] || 'main'
-    await Promise.all([fetchTargets(), fetchStock()])
+    await Promise.all([fetchTargets(), fetchStock(), fetchCatalog(), fetchRegistry()])
     render()
     connectWs()
   } catch {

@@ -16,8 +16,63 @@ body {
   padding: 2rem;
 }
 
+input[type="number"],
+input[type="text"],
+input[type="password"] {
+  background: #373737;
+  border: 2px solid #555;
+  color: #e0e0e0;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: inherit;
+  outline: none;
+}
+
+input[type="number"]:focus,
+input[type="text"]:focus,
+input[type="password"]:focus {
+  border-color: #aaa;
+}
+
 input::placeholder {
   opacity: 0.35;
+}
+
+input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+button {
+  background: #5a5a5a;
+  border-top: 2px solid #8a8a8a;
+  border-left: 2px solid #8a8a8a;
+  border-bottom: 2px solid #222;
+  border-right: 2px solid #222;
+  color: #fff;
+  padding: 6px 14px;
+  min-width: 80px;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  text-shadow: 1px 1px 0 #000;
+  text-align: center;
+}
+
+button:hover:not(:disabled) {
+  background: #707070;
+}
+
+button:active:not(:disabled) {
+  border-top: 2px solid #222;
+  border-left: 2px solid #222;
+  border-bottom: 2px solid #8a8a8a;
+  border-right: 2px solid #8a8a8a;
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .gtnh-icon {
@@ -30,4 +85,143 @@ input::placeholder {
   image-rendering: pixelated;
   vertical-align: middle;
   flex-shrink: 0;
+}
+
+.gtnh-icon-missing {
+  background: #555;
+}
+
+/* MC-style toggle button */
+.mc-toggle {
+  width: 28px;
+  height: 28px;
+  background: #5a5a5a;
+  border: 2px solid #888;
+  color: #e0e0e0;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.mc-toggle.mc-toggle-on {
+  background: #4a7a4a;
+  border-color: #7abf7a;
+  color: #b0ffb0;
+}
+
+/* Item slot (icon + name) */
+.item-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border: 2px solid transparent;
+  white-space: nowrap;
+}
+
+.item-slot:hover {
+  border-color: #888;
+  background: #2a2a2a;
+}
+
+.item-slot-empty {
+  color: #888;
+  font-style: italic;
+  border: 2px dashed #555;
+  padding: 4px 8px;
+  min-width: 160px;
+}
+
+#status {
+  min-height: 1.4em;
+}
+
+/* Item picker overlay */
+.picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.picker-modal {
+  background: #1e1e1e;
+  border: 2px solid #888;
+  width: min(640px, 95vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.picker-header {
+  display: flex;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 2px solid #444;
+}
+
+.picker-header input {
+  flex: 1;
+}
+
+#picker-close {
+  background: #5a2a2a;
+  border: 2px solid #a05555;
+  color: #e0e0e0;
+  width: 32px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.picker-grid {
+  overflow-y: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 10px;
+}
+
+.picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  cursor: pointer;
+  border: 2px solid transparent;
+  width: 90px;
+  min-height: 64px;
+}
+
+.picker-item:hover {
+  border-color: #888;
+  background: #2a2a2a;
+}
+
+.picker-item-name {
+  font-size: 10px;
+  text-align: center;
+  word-break: break-word;
+  max-height: 30px;
+  overflow: hidden;
+  line-height: 1.2;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th, td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #333;
 }
