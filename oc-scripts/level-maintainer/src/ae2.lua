@@ -1,0 +1,138 @@
+local component = require("component")
+local ME = component.me_interface
+
+local ae2 = {}
+
+local itemCache = {}
+local fluidNameCache = {}
+local cacheTime = 0
+local CACHE_TTL = 600
+
+local function getCraftable(name)
+  local now = os.time()
+  if now - cacheTime >= CACHE_TTL then
+    itemCache = {}
+    fluidNameCache = {}
+    cacheTime = now
+  end
+  local cached = itemCache[name]
+  if cached ~= nil then
+    return cached ~= false and cached or nil
+  end
+  local results = ME.getCraftables({ ["label"] = name })
+  if #results >= 1 then
+    itemCache[name] = results[1]
+    return results[1]
+  end
+  itemCache[name] = false
+  return nil
+end
+
+local function getStack(craftable)
+  return (craftable.getStack or craftable.getItemStack)(craftable)
+end
+
+local function itemCount(craftable)
+  local item = getStack(craftable)
+  if not item or not item.name then return 0 end
+  local found
+  if item.tag then
+    found = ME.getItemInNetwork(item.name, item.damage or 0, item.tag)
+  end
+  if not found then
+    found = ME.getItemInNetwork(item.name, item.damage or 0)
+  end
+  return found and found.size or 0
+end
+
+function ae2.getCount(name, fluidName)
+  if fluidName then
+    local fluid = ME.getFluidInNetwork(fluidName)
+    return fluid and (fluid.size or fluid.amount) or 0
+  end
+  local craftable = getCraftable(name)
+  if not craftable then return 0 end
+  return itemCount(craftable)
+end
+
+function ae2.requestItem(name, threshold, batch, fluidName)
+  local craftable = getCraftable(name)
+  if not craftable then
+    return false, name .. " is not craftable"
+  end
+  if threshold ~= nil then
+    local count
+    if fluidName then
+      local fluid = ME.getItemInNetwork("ae2fc:fluid_drop", 0, '{Fluid:' .. fluidName .. '}')
+      count = fluid and fluid.size or 0
+    else
+      count = itemCount(craftable)
+    end
+    if count >= threshold then
+      return false, (getStack(craftable).label or name) .. " at " .. count .. " meets threshold " .. threshold
+    end
+  end
+  local item = getStack(craftable)
+  if item.label ~= name then
+    return false, name .. " label mismatch"
+  end
+  local craft = craftable.request(batch)
+  while craft.isComputing() do os.sleep(1) end
+  if craft.hasFailed() then
+    return false, "failed to request " .. name .. " x " .. batch
+  end
+  return true, "requested " .. name .. " x " .. batch
+end
+
+function ae2.requestFluid(name, threshold, batch, fluidName)
+  local craftable = getCraftable(name)
+  if not craftable then
+    return false, name .. " is not craftable"
+  end
+  if threshold ~= nil then
+    if not fluidName then
+      local cached = fluidNameCache[name]
+      if cached == nil then
+        local stack = getStack(craftable)
+        cached = (stack and stack.name) or false
+        fluidNameCache[name] = cached
+      end
+      if cached then fluidName = cached end
+    end
+    if fluidName then
+      local fluid = ME.getFluidInNetwork(fluidName)
+      local amount = fluid and (fluid.size or fluid.amount) or 0
+      if amount >= threshold then
+        return false, (fluid and fluid.label or name) .. " at " .. amount .. " mB meets threshold " .. threshold .. " mB"
+      end
+    end
+  end
+  local craft = craftable.request(batch)
+  while craft.isComputing() do os.sleep(1) end
+  if craft.hasFailed() then
+    return false, "failed to request " .. name .. " x " .. batch .. " mB"
+  end
+  return true, "requested " .. name .. " x " .. batch .. " mB"
+end
+
+function ae2.crafting()
+  local cpus = ME.getCpus()
+  local active = {}
+  for _, v in pairs(cpus) do
+    local output = v.cpu.finalOutput()
+    if output then active[output.label] = true end
+  end
+  return active
+end
+
+function ae2.hasFluidSupport()
+  return ME.getFluidInNetwork ~= nil
+end
+
+function ae2.clearCache()
+  itemCache = {}
+  fluidNameCache = {}
+  cacheTime = 0
+end
+
+return ae2
