@@ -3,6 +3,12 @@ import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
 import { randomBytes } from 'crypto'
+import { readFileSync } from 'fs'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+const dir = dirname(fileURLToPath(import.meta.url))
+const itemRegistry = JSON.parse(readFileSync(resolve(dir, 'data/gtnh_registry.json'), 'utf8'))
 import {
   getTargets, upsertTarget, deleteTarget,
   getStock, getCatalog, getNetworks,
@@ -72,6 +78,13 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
   if (catalog) updateCatalog(network_id, catalog)
   if (stock) broadcast({ type: 'stock', network_id, stock, sleep })
   res.json({ targets: getTargets(network_id) })
+})
+
+app.get('/api/items/search', browserAuth, (req, res) => {
+  const q = (req.query.q ?? '').toLowerCase().trim()
+  if (!q) return res.json([])
+  const results = itemRegistry.filter(i => i.label.toLowerCase().includes(q)).slice(0, 20)
+  res.json(results)
 })
 
 app.post('/api/login', (req, res) => {
