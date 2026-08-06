@@ -48,20 +48,37 @@ app.get('/api/targets/:networkId', (req, res) => {
   res.json(getTargets(req.params.networkId))
 })
 
+function parseTarget(body) {
+  const { label, threshold, batch_size, fluid_tag, is_fluid } = body
+  const parsedThreshold = threshold === null || threshold === undefined || threshold === '' ? null : Number(threshold)
+  const parsedBatch = Number(batch_size ?? 1)
+  if (parsedThreshold !== null && !Number.isFinite(parsedThreshold)) return null
+  if (!Number.isFinite(parsedBatch) || parsedBatch < 1) return null
+  return {
+    label,
+    threshold: parsedThreshold,
+    batch_size: Math.floor(parsedBatch),
+    fluid_tag: fluid_tag ?? null,
+    is_fluid: Boolean(is_fluid)
+  }
+}
+
 app.post('/api/targets/:networkId', (req, res) => {
-  const { label, threshold, batch_size, fluid_tag, is_fluid } = req.body
-  if (!label) return res.status(400).json({ error: 'label required' })
-  upsertTarget(req.params.networkId, { label, threshold, batch_size, fluid_tag, is_fluid })
+  const { label } = req.body
+  if (!label || typeof label !== 'string' || !label.trim()) {
+    return res.status(400).json({ error: 'label required' })
+  }
+  const target = parseTarget(req.body)
+  if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
+  upsertTarget(req.params.networkId, target)
   broadcast({ type: 'targets', network_id: req.params.networkId, targets: getTargets(req.params.networkId) })
   res.json({ ok: true })
 })
 
 app.put('/api/targets/:networkId/:label', (req, res) => {
-  const { threshold, batch_size, fluid_tag, is_fluid } = req.body
-  upsertTarget(req.params.networkId, {
-    label: req.params.label,
-    threshold, batch_size, fluid_tag, is_fluid
-  })
+  const target = parseTarget({ ...req.body, label: req.params.label })
+  if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
+  upsertTarget(req.params.networkId, target)
   broadcast({ type: 'targets', network_id: req.params.networkId, targets: getTargets(req.params.networkId) })
   res.json({ ok: true })
 })
