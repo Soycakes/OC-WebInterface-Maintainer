@@ -160,6 +160,24 @@ button:disabled {
   width: 56px;
 }
 
+.status-col {
+  width: 14px;
+  padding: 0 2px;
+  text-align: center;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #333;
+}
+
+.status-ok { background: #55aa77; }
+.status-crafting { background: #5599ff; }
+.status-error { background: #cc4444; }
+
 /* Item picker overlay */
 .picker-overlay {
   position: fixed;

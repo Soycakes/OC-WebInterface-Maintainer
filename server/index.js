@@ -78,11 +78,11 @@ function broadcast(data) {
 }
 
 app.post('/api/sync', auth, rateLimit, (req, res) => {
-  const { network_id, stock, catalog, sleep } = req.body
+  const { network_id, stock, catalog, status } = req.body
   if (!network_id) return res.status(400).json({ error: 'network_id required' })
   if (stock) updateStock(network_id, stock)
   if (catalog) { updateCatalog(network_id, catalog); broadcast({ type: 'catalog', network_id, catalog }) }
-  if (stock) broadcast({ type: 'stock', network_id, stock })
+  if (stock) broadcast({ type: 'stock', network_id, stock, status })
   const settings = getSettings(network_id)
   res.json({ targets: withIcons(getTargets(network_id)).filter(t => t.enabled !== 0), maintainer_sleep: settings.maintainer_sleep })
 })

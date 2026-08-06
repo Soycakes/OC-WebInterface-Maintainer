@@ -116,7 +116,7 @@ function ae2.crafting()
   local active = {}
   for _, v in pairs(cpus) do
     local output = v.cpu.finalOutput()
-    if output then active[output.label] = true end
+    if output then active[output.label] = output.size or 1 end
   end
   return active
 end

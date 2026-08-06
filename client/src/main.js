@@ -17,6 +17,7 @@ let stock = {}
 let networks = []
 let catalog = []
 let registry = []
+let itemStatus = {}
 const timers = {}
 let statusMsg = ''
 let statusTimer = null
@@ -250,7 +251,8 @@ function connectWs() {
     if (msg.network_id !== networkId) return
 
     if (msg.type === 'stock') {
-      stock = msg.stock
+      Object.assign(stock, msg.stock)
+      if (msg.status) itemStatus = msg.status
       updateStockCells()
     }
     if (msg.type === 'catalog') {
@@ -327,6 +329,16 @@ function renderNetworkBar() {
   }
 }
 
+function statusDot(label, target) {
+  const s = itemStatus
+  let cls = ''
+  if (s.failed && s.failed[label]) cls = 'status-error'
+  else if (s.crafting && s.crafting[label]) cls = 'status-crafting'
+  else if (s.requested && s.requested[label]) cls = 'status-ok'
+  else if (stock[label] !== undefined && target.threshold !== null && stock[label] >= target.threshold) cls = 'status-ok'
+  return `<span class="status-dot ${cls}" title="${s.failed?.[label] ?? ''}"></span>`
+}
+
 function renderTable() {
   const container = document.getElementById('table-container')
 
@@ -341,6 +353,7 @@ function renderTable() {
 
     return `
       <tr ${dimmed}>
+        <td class="status-col">${statusDot(t.label, t)}</td>
         <td>
           <button class="mc-toggle ${enabled ? 'mc-toggle-on' : ''}" data-toggle="${t.label}">
             ${enabled ? '✓' : ''}
@@ -375,6 +388,7 @@ function renderTable() {
   const addRow = `
     <tr>
       <td></td>
+      <td></td>
       <td>${slotHtml}</td>
       <td></td>
       <td><input id="add-threshold" type="number" placeholder="infinite" ${pendingAdd ? '' : 'disabled'}></td>
@@ -387,6 +401,7 @@ function renderTable() {
     <table>
       <thead>
         <tr>
+          <th></th>
           <th></th>
           <th>Item</th>
           <th>Stock</th>

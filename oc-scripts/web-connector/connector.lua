@@ -78,6 +78,7 @@ while true do
     local result = post("/api/sync", {
       network_id = cfg.network_id,
       stock = stockData.stock,
+      status = stockData.status,
       catalog = lastCatalog,
       sleep = cfg.poll_interval,
     })

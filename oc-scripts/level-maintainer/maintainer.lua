@@ -18,9 +18,51 @@ end
 
 local catalogCache = nil
 local lastCraftableCount = nil
+local lastCycleStatus = { crafting = {}, requested = {}, failed = {} }
+
+local gpu = component.isAvailable("gpu") and component.gpu or nil
+local screenW, screenH = 50, 16
+if gpu then screenW, screenH = gpu.getResolution() end
+
+local logBuffer = {}
 
 local function log(msg)
-  print("[" .. os.date("%H:%M:%S") .. "] " .. tostring(msg))
+  local line = "[" .. os.date("%H:%M:%S") .. "] " .. tostring(msg)
+  if gpu then
+    logBuffer[#logBuffer + 1] = line
+    if #logBuffer > 6 then table.remove(logBuffer, 1) end
+  else
+    print(line)
+  end
+end
+
+local function drawScreen(active, requested, failed)
+  if not gpu then return end
+  gpu.fill(1, 1, screenW, screenH, " ")
+  local row = 1
+  local function line(text, color)
+    if row > screenH then return end
+    gpu.setForeground(color or 0xFFFFFF)
+    gpu.set(1, row, text)
+    row = row + 1
+  end
+  if next(active) then
+    line("CURRENTLY CRAFTING", 0x55FFFF)
+    for label, count in pairs(active) do
+      line("  " .. label .. " : " .. count .. "x", 0x55FFFF)
+    end
+    line("---", 0x555555)
+  end
+  for label, batch in pairs(requested) do
+    line("  requested " .. label .. " x " .. batch, 0x55FF55)
+  end
+  for _, msg in pairs(failed) do
+    line("  " .. msg, 0xFF5555)
+  end
+  for _, entry in ipairs(logBuffer) do
+    line(entry, 0x888888)
+  end
+  gpu.setForeground(0xFFFFFF)
 end
 
 local function buildCatalog(craftables)
@@ -65,7 +107,7 @@ end
 
 local function handleModem(_, _, _, _, _, msg)
   if msg == "requeststock" then
-    tunnel.send(serialization.serialize({ stock = stock() }))
+    tunnel.send(serialization.serialize({ stock = stock(), status = lastCycleStatus }))
     return
   end
   if msg == "requestcatalog" then
@@ -106,18 +148,34 @@ while true do
 
   checkCatalogChanged()
   local active = ae2.crafting()
+  local cycleRequested = {}
+  local cycleFailed = {}
 
   for label, config in pairs(items) do
     if not active[label] then
-      local _, msg = ae2.requestItem(label, config[1], config[2], config[3])
-      if msg then log(msg) end
+      local ok, msg = ae2.requestItem(label, config[1], config[2], config[3])
+      if ok then
+        cycleRequested[label] = config[2] or 1
+      elseif msg then
+        cycleFailed[label] = msg
+        log(msg)
+      end
     end
   end
 
   for label, config in pairs(fluids) do
     if not active[label] then
-      local _, msg = ae2.requestFluid(label, config[1], config[2], config[3])
-      if msg then log(msg) end
+      local ok, msg = ae2.requestFluid(label, config[1], config[2], config[3])
+      if ok then
+        cycleRequested[label] = config[2] or 1
+      elseif msg then
+        cycleFailed[label] = msg
+        log(msg)
+      end
     end
   end
+
+  lastCycleStatus = { crafting = active, requested = cycleRequested, failed = cycleFailed }
+  drawScreen(active, cycleRequested, cycleFailed)
+  logBuffer = {}
 end
