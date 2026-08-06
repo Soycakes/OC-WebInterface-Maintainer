@@ -27,34 +27,71 @@ db.exec(`
   );
 `)
 
-const queries = {
+const q = {
   getTargets: db.prepare('SELECT * FROM targets WHERE network_id = ?'),
-  upsertStock: db.prepare(
-    'INSERT INTO stock (network_id, label, count) VALUES (?, ?, ?) ON CONFLICT(network_id, label) DO UPDATE SET count = excluded.count'
-  ),
-  upsertCatalog: db.prepare(
-    'INSERT OR IGNORE INTO catalog (network_id, label) VALUES (?, ?)'
-  )
+  upsertTarget: db.prepare(`
+    INSERT INTO targets (network_id, label, threshold, batch_size, fluid_tag, is_fluid)
+    VALUES (@network_id, @label, @threshold, @batch_size, @fluid_tag, @is_fluid)
+    ON CONFLICT(network_id, label) DO UPDATE SET
+      threshold = excluded.threshold,
+      batch_size = excluded.batch_size,
+      fluid_tag = excluded.fluid_tag,
+      is_fluid = excluded.is_fluid
+  `),
+  deleteTarget: db.prepare('DELETE FROM targets WHERE network_id = ? AND label = ?'),
+  getStock: db.prepare('SELECT * FROM stock WHERE network_id = ?'),
+  getCatalog: db.prepare('SELECT label FROM catalog WHERE network_id = ?'),
+  getNetworks: db.prepare('SELECT DISTINCT network_id FROM stock'),
+  upsertStock: db.prepare(`
+    INSERT INTO stock (network_id, label, count) VALUES (?, ?, ?)
+    ON CONFLICT(network_id, label) DO UPDATE SET count = excluded.count
+  `),
+  upsertCatalog: db.prepare('INSERT OR IGNORE INTO catalog (network_id, label) VALUES (?, ?)')
 }
 
 export function getTargets(networkId) {
-  return queries.getTargets.all(networkId)
+  return q.getTargets.all(networkId)
+}
+
+export function upsertTarget(networkId, target) {
+  q.upsertTarget.run({
+    network_id: networkId,
+    label: target.label,
+    threshold: target.threshold ?? null,
+    batch_size: target.batch_size ?? 1,
+    fluid_tag: target.fluid_tag ?? null,
+    is_fluid: target.is_fluid ? 1 : 0
+  })
+}
+
+export function deleteTarget(networkId, label) {
+  q.deleteTarget.run(networkId, label)
+}
+
+export function getStock(networkId) {
+  return q.getStock.all(networkId)
+}
+
+export function getCatalog(networkId) {
+  return q.getCatalog.all(networkId).map(r => r.label)
+}
+
+export function getNetworks() {
+  return q.getNetworks.all().map(r => r.network_id)
 }
 
 export function updateStock(networkId, stock) {
-  const run = db.transaction(() => {
+  db.transaction(() => {
     for (const [label, count] of Object.entries(stock)) {
-      queries.upsertStock.run(networkId, label, count)
+      q.upsertStock.run(networkId, label, count)
     }
-  })
-  run()
+  })()
 }
 
 export function updateCatalog(networkId, labels) {
-  const run = db.transaction(() => {
+  db.transaction(() => {
     for (const label of labels) {
-      queries.upsertCatalog.run(networkId, label)
+      q.upsertCatalog.run(networkId, label)
     }
-  })
-  run()
+  })()
 }
