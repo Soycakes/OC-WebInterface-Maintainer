@@ -45,6 +45,8 @@ async function addTarget(label, threshold, batchSize, isFluid) {
 }
 
 async function removeTarget(label) {
+  clearTimeout(timers[label])
+  delete timers[label]
   await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
     method: 'DELETE'
   })
