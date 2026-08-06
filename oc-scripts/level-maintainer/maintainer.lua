@@ -44,13 +44,17 @@ local function drawScreen(active, requested, failed)
     gpu.set(1, row, text)
     row = row + 1
   end
-  if next(active) then
-    line("CURRENTLY CRAFTING", 0x55FFFF)
-    for label, count in pairs(active) do
+  local managedCrafting = false
+  for label, count in pairs(active) do
+    if items[label] or fluids[label] then
+      if not managedCrafting then
+        line("CURRENTLY CRAFTING", 0x55FFFF)
+        managedCrafting = true
+      end
       line("  " .. label .. " : " .. count .. "x", 0x55FFFF)
     end
-    line("---", 0x555555)
   end
+  if managedCrafting then line("---", 0x555555) end
   for label, batch in pairs(requested) do
     line("  requested " .. label .. " x " .. batch, 0x55FF55)
   end
@@ -144,7 +148,11 @@ while true do
     end
   end
 
-  lastCycleStatus = { crafting = active, requested = cycleRequested, failed = cycleFailed }
+  local managedActive = {}
+  for label, count in pairs(active) do
+    if items[label] or fluids[label] then managedActive[label] = count end
+  end
+  lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed }
   drawScreen(active, cycleRequested, cycleFailed)
   logBuffer = {}
 end

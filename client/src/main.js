@@ -388,11 +388,11 @@ function renderTable() {
         </td>
         <td id="stock-${t.label}" title="${stockTitle}">${stockDisplay}</td>
         <td>
-          <input type="number" value="${thresholdVal}" placeholder="infinite"
+          <input type="text" value="${thresholdVal}" placeholder="infinite"
             data-label="${t.label}" data-field="threshold">
         </td>
         <td>
-          <input type="number" value="${batchVal}"
+          <input type="text" value="${batchVal}"
             data-label="${t.label}" data-field="batch_size">
         </td>
         <td>
