@@ -3,6 +3,7 @@ const app = document.getElementById('app')
 let networkId = null
 let targets = []
 let stock = {}
+let networks = []
 const timers = {}
 
 async function fetchNetworks() {
@@ -87,9 +88,6 @@ function updateStockCells() {
 }
 
 function render() {
-  const networkSelect = document.getElementById('network-select')
-  const selectedNetwork = networkSelect ? networkSelect.value : networkId
-
   app.innerHTML = `
     <div>
       <h1>OC Level Maintainer</h1>
@@ -99,36 +97,32 @@ function render() {
     </div>
   `
 
-  renderNetworkBar(selectedNetwork)
+  renderNetworkBar()
   renderTable()
   renderAddRow()
 }
 
-function renderNetworkBar(selectedNetwork) {
-  fetchNetworks().then(networks => {
-    const bar = document.getElementById('network-bar')
-    if (!bar) return
+function renderNetworkBar() {
+  const bar = document.getElementById('network-bar')
 
-    if (networks.length <= 1) {
-      bar.innerHTML = `<p>Network: <strong>${networkId}</strong></p>`
-      return
-    }
+  if (networks.length <= 1) {
+    bar.innerHTML = `<p>Network: <strong>${networkId}</strong></p>`
+    return
+  }
 
-    bar.innerHTML = `
-      <label>Network:
-        <select id="network-select">
-          ${networks.map(n => `<option value="${n}"${n === networkId ? ' selected' : ''}>${n}</option>`).join('')}
-        </select>
-      </label>
-    `
+  bar.innerHTML = `
+    <label>Network:
+      <select id="network-select">
+        ${networks.map(n => `<option value="${n}"${n === networkId ? ' selected' : ''}>${n}</option>`).join('')}
+      </select>
+    </label>
+  `
 
-    document.getElementById('network-select').onchange = async (e) => {
-      networkId = e.target.value
-      await fetchTargets()
-      await fetchStock()
-      render()
-    }
-  })
+  document.getElementById('network-select').onchange = async (e) => {
+    networkId = e.target.value
+    await Promise.all([fetchTargets(), fetchStock()])
+    render()
+  }
 }
 
 function renderTable() {
@@ -244,10 +238,9 @@ function renderAddRow() {
 }
 
 async function init() {
-  const networks = await fetchNetworks()
+  networks = await fetchNetworks()
   networkId = networks[0] || 'main'
-  await fetchTargets()
-  await fetchStock()
+  await Promise.all([fetchTargets(), fetchStock()])
   render()
   connectWs()
 }
