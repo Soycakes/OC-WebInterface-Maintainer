@@ -111,6 +111,22 @@ function ae2.requestFluid(name, threshold, batch, fluidName)
   return true, "requested " .. name .. " x " .. batch .. " mB"
 end
 
+function ae2.getFluidCount(name, fluidName)
+  if not fluidName then
+    local cached = fluidNameCache[name]
+    if cached == nil then
+      local craftable = getCraftable(name)
+      local stack = craftable and getStack(craftable)
+      cached = (stack and stack.name) or false
+      fluidNameCache[name] = cached
+    end
+    if cached then fluidName = cached end
+  end
+  if not fluidName then return 0 end
+  local fluid = ME.getFluidInNetwork(fluidName)
+  return fluid and (fluid.size or fluid.amount) or 0
+end
+
 function ae2.crafting()
   local cpus = ME.getCpus()
   local active = {}

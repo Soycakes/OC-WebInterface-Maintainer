@@ -70,7 +70,7 @@ local function stock()
     counts[label] = ae2.getCount(label, config[3])
   end
   for label, config in pairs(fluids) do
-    counts[label] = ae2.getCount(label, config[3] or label)
+    counts[label] = ae2.getFluidCount(label, config[3])
   end
   return counts
 end

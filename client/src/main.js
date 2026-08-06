@@ -32,6 +32,21 @@ function formatCount(n) {
   return String(n)
 }
 
+function parseAmount(str) {
+  if (!str || str.trim() === '') return null
+  const multipliers = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }
+  const s = str.toLowerCase().trim().replace(/(\d+\.?\d*)([kmbt]+)/g, (_, num, suf) => {
+    let val = parseFloat(num)
+    for (const c of suf) val *= multipliers[c] || 1
+    return String(val)
+  })
+  if (!/^[\d\s+\-*/.()e]+$/.test(s)) return null
+  try {
+    const result = Function('"use strict"; return (' + s + ')')()
+    return Number.isFinite(result) ? Math.round(result) : null
+  } catch { return null }
+}
+
 function iconStyle(x, y) {
   if (x === undefined || y === undefined) return ''
   return `background-position: -${x}px -${y}px`
@@ -127,8 +142,8 @@ async function addTarget(label, threshold, batchSize, isFluid) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         label,
-        threshold: threshold === '' ? null : Number(threshold),
-        batch_size: Number(batchSize),
+        threshold: threshold === '' ? null : (parseAmount(threshold) ?? Number(threshold)),
+        batch_size: parseAmount(batchSize) ?? Number(batchSize) ?? 1,
         is_fluid: isFluid
       })
     })
@@ -223,9 +238,12 @@ function openItemPicker(onSelect) {
       renderResults(catalogItems)
       return
     }
-    const lower = q.toLowerCase()
+    const tokens = q.toLowerCase().split(/\s+/).filter(Boolean)
     const results = registry
-      .filter(i => i.label.toLowerCase().includes(lower))
+      .filter(i => {
+        const label = i.label.toLowerCase()
+        return tokens.every(t => label.includes(t))
+      })
       .sort((a, b) => {
         const ac = catalogSet.has(a.label) ? 0 : 1
         const bc = catalogSet.has(b.label) ? 0 : 1
@@ -474,8 +492,8 @@ function getRowData(label) {
   const target = targets.find(t => t.label === label)
 
   return {
-    threshold: thresholdInput.value === '' ? null : Number(thresholdInput.value),
-    batch_size: Number(batchInput.value),
+    threshold: thresholdInput.value === '' ? null : (parseAmount(thresholdInput.value) ?? Number(thresholdInput.value)),
+    batch_size: parseAmount(batchInput.value) ?? Number(batchInput.value) ?? 1,
     is_fluid: target?.is_fluid ?? false
   }
 }
