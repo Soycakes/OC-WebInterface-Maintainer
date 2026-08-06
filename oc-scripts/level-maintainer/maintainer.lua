@@ -16,7 +16,6 @@ if fluids and next(fluids) and not ae2.hasFluidSupport() then
   fluids = {}
 end
 
-local catalogCache = nil
 local lastCycleStatus = { crafting = {}, requested = {}, failed = {} }
 
 local gpu = component.isAvailable("gpu") and component.gpu or nil
@@ -64,23 +63,6 @@ local function drawScreen(active, requested, failed)
   gpu.setForeground(0xFFFFFF)
 end
 
-local function buildCatalog(craftables)
-  local labels = {}
-  for i = 1, #craftables do
-    local stack = (craftables[i].getStack or craftables[i].getItemStack)(craftables[i])
-    if stack and stack.label then labels[#labels + 1] = stack.label end
-  end
-  return labels
-end
-
-local function catalog()
-  if catalogCache then return catalogCache end
-  local craftables = component.me_interface.getCraftables()
-  catalogCache = buildCatalog(craftables)
-  craftables = nil
-  collectgarbage("collect")
-  return catalogCache
-end
 
 local function stock()
   local counts = {}
@@ -99,8 +81,7 @@ local function handleModem(_, _, _, _, _, msg)
     return
   end
   if msg == "requestcatalog" then
-    catalogCache = nil
-    tunnel.send(serialization.serialize({ catalog = catalog() }))
+    tunnel.send(serialization.serialize({ catalog = {} }))
     return
   end
   if msg:sub(1, 8) == "setsleep" then
