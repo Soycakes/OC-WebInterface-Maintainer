@@ -37,21 +37,19 @@ local function getCraftable(name)
   queryCount = queryCount + 1
   local results = ME.getCraftables({ ["label"] = name })
   if #results >= 1 then
-    itemCache[name] = results[1]
-    return results[1]
+    local obj = results[1]
+    queryCount = queryCount + 1
+    local stack = (obj.getStack or obj.getItemStack)(obj)
+    itemCache[name] = { obj = obj, stack = stack }
+    return itemCache[name]
   end
   itemCache[name] = false
   return nil
 end
 
-local function getStack(craftable)
-  queryCount = queryCount + 1
-  return (craftable.getStack or craftable.getItemStack)(craftable)
-end
-
-local function itemCount(craftable)
-  local item = getStack(craftable)
-  if not item or not item.name then return 0, nil end
+local function itemCount(entry)
+  local item = entry.stack
+  if not item or not item.name then return 0 end
   local found
   if item.tag then
     queryCount = queryCount + 1
@@ -61,36 +59,30 @@ local function itemCount(craftable)
     queryCount = queryCount + 1
     found = ME.getItemInNetwork(item.name, item.damage or 0)
   end
-  return found and found.size or 0, item
+  return found and found.size or 0
 end
 
 function ae2.getCount(name)
-  local craftable = getCraftable(name)
-  if not craftable then return 0 end
-  return itemCount(craftable)
+  local entry = getCraftable(name)
+  if not entry then return 0 end
+  return itemCount(entry)
 end
 
 function ae2.requestItem(name, threshold, batch, currentCount)
-  local craftable = getCraftable(name)
-  if not craftable then
+  local entry = getCraftable(name)
+  if not entry then
     return false, name .. " is not craftable"
   end
-  local itemStack
   if threshold ~= nil then
-    local count
-    if currentCount then
-      count = currentCount
-    else
-      count, itemStack = itemCount(craftable)
-    end
+    local count = currentCount or itemCount(entry)
     if count >= threshold then return end
   end
-  local item = itemStack or getStack(craftable)
+  local item = entry.stack
   if not item or item.label ~= name then
     return false, name .. " label mismatch or stack could not be resolved"
   end
   queryCount = queryCount + 1
-  local craft = craftable.request(batch)
+  local craft = entry.obj.request(batch)
   while craft.isComputing() do os.sleep(1) end
   if craft.hasFailed() then
     return false, "failed to request " .. name .. " x " .. batch
@@ -99,8 +91,8 @@ function ae2.requestItem(name, threshold, batch, currentCount)
 end
 
 function ae2.requestFluid(name, threshold, batch, fluidName, currentCount)
-  local craftable = getCraftable(name)
-  if not craftable then
+  local entry = getCraftable(name)
+  if not entry then
     return false, name .. " is not craftable"
   end
   if threshold ~= nil then
@@ -111,8 +103,7 @@ function ae2.requestFluid(name, threshold, batch, fluidName, currentCount)
       if not fluidName then
         local cached = fluidNameCache[name]
         if cached == nil then
-          local stack = getStack(craftable)
-          cached = (stack and stack.name) or false
+          cached = (entry.stack and entry.stack.name) or false
           fluidNameCache[name] = cached
         end
         if cached then fluidName = cached end
@@ -128,7 +119,7 @@ function ae2.requestFluid(name, threshold, batch, fluidName, currentCount)
     if amount >= threshold then return end
   end
   queryCount = queryCount + 1
-  local craft = craftable.request(batch)
+  local craft = entry.obj.request(batch)
   while craft.isComputing() do os.sleep(1) end
   if craft.hasFailed() then
     return false, "failed to request " .. name .. " x " .. batch .. " mB"
@@ -140,9 +131,8 @@ function ae2.getFluidCount(name, fluidName)
   if not fluidName then
     local cached = fluidNameCache[name]
     if cached == nil then
-      local craftable = getCraftable(name)
-      local stack = craftable and getStack(craftable)
-      cached = (stack and stack.name) or false
+      local entry = getCraftable(name)
+      cached = (entry and entry.stack and entry.stack.name) or false
       fluidNameCache[name] = cached
     end
     if cached then fluidName = cached end
