@@ -1,0 +1,38 @@
+services:
+  oc-maintainer:
+    build: .
+    image: oc-web-interface-maintainer
+    container_name: oc-maintainer
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      DATA_DIR: /data
+      # Set to "false" once your networks are registered, to stop new
+      # OC computers from claiming a network on this server.
+      OPEN_REGISTRATION: "true"
+      # Per-IP requests/minute on /api. 0 disables.
+      RATE_LIMIT: "60"
+      # Comma-separated IPs to refuse entirely, e.g. "1.2.3.4,5.6.7.8"
+      BLOCKED_IPS: ""
+      # Set to "true" if this sits behind Caddy/nginx, so rate limiting
+      # sees real visitor IPs instead of the proxy's.
+      TRUST_PROXY: "false"
+    volumes:
+      - oc-maintainer-data:/data
+    # Cap the blast radius: worst case a flood pins this container,
+    # not the host it shares.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+# Named volume: survives `docker compose down`, image rebuilds and updates.
+# Back it up with:
+#   docker run --rm -v oc-maintainer-data:/data -v ${PWD}:/backup alpine \
+#     tar czf /backup/oc-maintainer-backup.tar.gz -C /data .
+volumes:
+  oc-maintainer-data:
+    name: oc-maintainer-data
