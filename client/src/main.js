@@ -363,6 +363,124 @@ function updateStockCells() {
   }
 }
 
+function buildExportBundle() {
+  return {
+    version: 1,
+    targets: targets.map(t => {
+      const out = { label: t.label, threshold: t.threshold }
+      if ((t.batch_size ?? 1) !== 1) out.batch_size = t.batch_size
+      if (t.fluid_tag) out.fluid_tag = t.fluid_tag
+      if (t.is_fluid) out.is_fluid = true
+      if (t.enabled === 0) out.enabled = false
+      return out
+    }),
+    groups: JSON.parse(localStorage.getItem(`maintainer_groups_${networkId}`) || '[]'),
+    order: JSON.parse(localStorage.getItem(`maintainer_custom_order_${networkId}`) || 'null'),
+    settings: { maintainer_sleep: maintainerSleep }
+  }
+}
+
+async function exportToClipboard() {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(buildExportBundle()))
+    showToast('Copied to clipboard!', 'success')
+  } catch {
+    showToast('Clipboard write failed', 'error')
+  }
+}
+
+function exportToFile() {
+  const json = JSON.stringify(buildExportBundle(), null, 2)
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }))
+  a.download = `oc-maintainer-${networkId}-${new Date().toISOString().slice(0, 10)}.json`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function validateBundle(data) {
+  if (!data || typeof data !== 'object' || !Array.isArray(data.targets)) return 'missing targets array'
+  for (const t of data.targets) {
+    if (typeof t.label !== 'string' || !t.label.trim()) return `invalid label`
+    if (t.threshold !== null && t.threshold !== undefined && !Number.isFinite(Number(t.threshold))) return `invalid threshold for ${t.label}`
+    const bs = t.batch_size ?? 1
+    if (!Number.isFinite(Number(bs)) || Number(bs) < 1) return `invalid batch_size for ${t.label}`
+  }
+  return null
+}
+
+async function importBundle(data) {
+  const error = validateBundle(data)
+  if (error) { showToast(`Import failed: ${error}`, 'error'); return }
+
+  const res = await fetch(`/api/targets/${networkId}/bulk`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targets: data.targets })
+  })
+  if (!res.ok) { showToast('Import failed: server rejected data', 'error'); return }
+
+  if (Array.isArray(data.groups)) localStorage.setItem(`maintainer_groups_${networkId}`, JSON.stringify(data.groups))
+  if (data.order) localStorage.setItem(`maintainer_custom_order_${networkId}`, JSON.stringify(data.order))
+
+  if (data.settings?.maintainer_sleep) {
+    await fetch(`/api/settings/${networkId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maintainer_sleep: data.settings.maintainer_sleep })
+    })
+    maintainerSleep = data.settings.maintainer_sleep
+  }
+
+  await fetchTargets()
+  render()
+  showToast(`Imported ${data.targets.length} targets`, 'success')
+}
+
+function openImportModal() {
+  const overlay = document.createElement('div')
+  overlay.className = 'picker-overlay'
+  overlay.innerHTML = `
+    <div class="picker-modal">
+      <div class="picker-header">
+        <span style="flex:1">Import Config</span>
+        <button id="picker-close">X</button>
+      </div>
+      <div style="padding:12px;display:flex;flex-direction:column;gap:10px">
+        <textarea id="import-paste" rows="14" style="width:100%;box-sizing:border-box;resize:vertical" placeholder="Paste exported JSON here..."></textarea>
+        <div style="display:flex;gap:8px">
+          <button id="import-paste-btn">Import from paste</button>
+          <button id="import-file-btn">Load from file</button>
+          <input id="import-file" type="file" accept=".json" style="display:none">
+        </div>
+      </div>
+    </div>
+  `
+  document.body.appendChild(overlay)
+  overlay.querySelector('#picker-close').onclick = () => overlay.remove()
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove() }
+
+  overlay.querySelector('#import-paste-btn').onclick = async () => {
+    try {
+      const data = JSON.parse(overlay.querySelector('#import-paste').value)
+      overlay.remove()
+      await importBundle(data)
+    } catch { showToast('Invalid JSON', 'error') }
+  }
+
+  overlay.querySelector('#import-file-btn').onclick = () => overlay.querySelector('#import-file').click()
+
+  overlay.querySelector('#import-file').onchange = async (e) => {
+    const file = e.target.files[0]
+    if (!file) return
+    try {
+      const data = JSON.parse(await file.text())
+      overlay.remove()
+      await importBundle(data)
+    } catch { showToast('Invalid JSON file', 'error') }
+  }
+}
+
 function render() {
   app.innerHTML = `
     <div class="page-header">
@@ -377,6 +495,11 @@ function render() {
             <img src="/youtubeLogo.png" alt="YouTube" class="credit-logo" />
           </a>
         </span>
+      </div>
+      <div class="header-actions">
+        <button id="export-copy-btn">Copy</button>
+        <button id="export-file-btn">Export</button>
+        <button id="import-btn">Import</button>
       </div>
     </div>
     <div id="network-bar"></div>
@@ -402,6 +525,10 @@ function render() {
     </div>
     <div id="add-container" class="mc-inventory-panel"></div>
   `
+
+  document.getElementById('export-copy-btn').onclick = exportToClipboard
+  document.getElementById('export-file-btn').onclick = exportToFile
+  document.getElementById('import-btn').onclick = openImportModal
 
   document.getElementById('sleep-input').addEventListener('input', (e) => {
     const val = Math.max(1, Math.floor(Number(e.target.value)))

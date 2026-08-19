@@ -32,6 +32,7 @@ try { db.exec(`ALTER TABLE targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1
 
 const q = {
   getTargets: db.prepare('SELECT * FROM targets WHERE network_id = ? ORDER BY rowid ASC'),
+  deleteAllTargets: db.prepare('DELETE FROM targets WHERE network_id = ?'),
   upsertTarget: db.prepare(`
     INSERT INTO targets (network_id, label, threshold, batch_size, fluid_tag, is_fluid, enabled)
     VALUES (@network_id, @label, @threshold, @batch_size, @fluid_tag, @is_fluid, @enabled)
@@ -71,6 +72,23 @@ export function upsertTarget(networkId, target) {
 
 export function deleteTarget(networkId, label) {
   q.deleteTarget.run(networkId, label)
+}
+
+export function replaceTargets(networkId, targets) {
+  db.transaction(() => {
+    q.deleteAllTargets.run(networkId)
+    for (const t of targets) {
+      q.upsertTarget.run({
+        network_id: networkId,
+        label: t.label,
+        threshold: t.threshold ?? null,
+        batch_size: t.batch_size ?? 1,
+        fluid_tag: t.fluid_tag ?? null,
+        is_fluid: t.is_fluid ? 1 : 0,
+        enabled: t.enabled === false ? 0 : 1
+      })
+    }
+  })()
 }
 
 export function getStock(networkId) {

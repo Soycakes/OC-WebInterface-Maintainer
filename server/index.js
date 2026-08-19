@@ -15,7 +15,7 @@ function withIcons(targets) {
   return targets.map(t => ({ ...t, ...iconMap.get(t.label) }))
 }
 import {
-  getTargets, upsertTarget, deleteTarget,
+  getTargets, upsertTarget, deleteTarget, replaceTargets,
   getStock, getNetworks,
   updateStock,
   getSettings, setSettings
@@ -143,6 +143,20 @@ app.post('/api/targets/:networkId', browserAuth, (req, res) => {
   const target = parseTarget(req.body)
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
   upsertTarget(req.params.networkId, target)
+  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
+  res.json({ ok: true })
+})
+
+app.put('/api/targets/:networkId/bulk', browserAuth, (req, res) => {
+  const incoming = req.body?.targets
+  if (!Array.isArray(incoming)) return res.status(400).json({ error: 'targets array required' })
+  const parsed = []
+  for (const item of incoming) {
+    const t = parseTarget(item)
+    if (!t) return res.status(400).json({ error: `invalid target: ${item?.label}` })
+    parsed.push(t)
+  }
+  replaceTargets(req.params.networkId, parsed)
   broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
   res.json({ ok: true })
 })
