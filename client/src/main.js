@@ -14,14 +14,25 @@ let stock = {}
 let networks = []
 let registry = []
 let itemStatus = {}
-const timers = {}
-let sleepTimer = null
 let maintainerSleep = 10
 let pendingAdd = null
 let addDefaults = { threshold: null, batch_size: 1, enabled: true }
 let isDirty = false
 let currentSort = localStorage.getItem('maintainer_sort_mode') || 'default'
 let isDragging = false
+let tableStale = false
+let ws = null
+
+const MAX_AMOUNT = 9000000000000000
+const clampAmount = n => n === null ? null : Math.min(n, MAX_AMOUNT)
+
+function esc(text) {
+  return String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+}
+
+function isEditing() {
+  return !!document.activeElement?.matches?.('#table-container input')
+}
 
 function formatShort(n) {
   if (n === null || n === undefined || n === '') return ''
@@ -120,6 +131,11 @@ async function fetchTargets() {
   targets = await res.json()
 }
 
+async function refreshTargets() {
+  await fetchTargets()
+  renderTable()
+}
+
 async function fetchStock() {
   const res = await fetch(`/api/stock/${networkId}`)
   const rows = await res.json()
@@ -177,10 +193,8 @@ async function saveTarget(label, data) {
 }
 
 async function addTarget(label, threshold, batchSize, isFluid, enabled) {
-  let parsedThreshold = threshold === '' ? null : (parseAmount(threshold) ?? Number(threshold))
-  if (parsedThreshold !== null && parsedThreshold > 9000000000000000) parsedThreshold = 9000000000000000
-  let parsedBatch = parseAmount(batchSize) ?? Number(batchSize) ?? 1
-  if (parsedBatch > 9000000000000000) parsedBatch = 9000000000000000
+  const parsedThreshold = threshold === '' ? null : clampAmount(parseAmount(threshold))
+  const parsedBatch = clampAmount(parseAmount(batchSize) ?? 1)
 
   try {
     const res = await fetch(`/api/targets/${networkId}`, {
@@ -196,23 +210,20 @@ async function addTarget(label, threshold, batchSize, isFluid, enabled) {
     })
     if (!res.ok) throw new Error()
     isDirty = true
-    await fetchTargets()
     pendingAdd = null
-    render()
+    renderAddPanel()
+    await refreshTargets()
   } catch {
     showToast(msg.addFailed, 'error')
   }
 }
 
 async function removeTarget(label) {
-  clearTimeout(timers[label])
-  delete timers[label]
   try {
     const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, { method: 'DELETE' })
     if (!res.ok) throw new Error()
     isDirty = true
-    await fetchTargets()
-    render()
+    await refreshTargets()
   } catch {
     showToast(msg.deleteFailed, 'error')
   }
@@ -236,8 +247,7 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
     })
     if (!res2.ok) throw new Error()
     isDirty = true
-    await fetchTargets()
-    render()
+    await refreshTargets()
   } catch {
     showToast(msg.saveFailed, 'error')
   }
@@ -263,9 +273,9 @@ function openItemPicker(onSelect) {
 
   function renderResults(items) {
     grid.innerHTML = items.slice(0, 64).map(i => `
-      <div class="picker-item" data-label="${i.label}" data-fluid="${i.is_fluid}" title="${i.label}">
+      <div class="picker-item" data-label="${esc(i.label)}" data-fluid="${i.is_fluid}" title="${esc(i.label)}">
         ${iconHtml(i.x, i.y)}
-        <span class="picker-item-name">${i.label}</span>
+        <span class="picker-item-name">${esc(i.label)}</span>
       </div>
     `).join('')
 
@@ -295,35 +305,44 @@ function openItemPicker(onSelect) {
 }
 
 function connectWs() {
-  if (document.hidden) return
+  if (ws || document.hidden) return
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-  const ws = new WebSocket(`${proto}://${location.host}/ws`)
+  const socket = new WebSocket(`${proto}://${location.host}/ws`)
+  ws = socket
 
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data)
-    if (msg.network_id !== networkId) return
+  socket.onmessage = (event) => {
+    const data = JSON.parse(event.data)
+    if (data.network_id !== networkId) return
 
-    if (msg.type === 'stock') {
-      Object.assign(stock, msg.stock)
-      if (msg.status) itemStatus = msg.status
+    if (data.type === 'stock') {
+      Object.assign(stock, data.stock)
+      if (data.status) itemStatus = data.status
       if (!isDragging) updateStockCells()
       if (isDirty) {
         isDirty = false
         showToast('Synced to OC!', 'success')
       }
     }
-    if (msg.type === 'targets') {
-      targets = msg.targets
-      Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
-      if (!isDragging) render()
+    if (data.type === 'targets') {
+      targets = data.targets
+      if (isDragging || isEditing()) tableStale = true
+      else renderTable()
     }
   }
 
-  ws.onclose = () => { if (!document.hidden) setTimeout(connectWs, 3000) }
+  socket.onclose = () => {
+    if (ws === socket) ws = null
+    if (!document.hidden) setTimeout(connectWs, 3000)
+  }
 }
 
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) connectWs()
+document.addEventListener('visibilitychange', async () => {
+  if (document.hidden) { ws?.close(); return }
+  if (!networkId) return
+  connectWs()
+  await Promise.all([fetchTargets(), fetchStock()])
+  if (isDragging || isEditing()) tableStale = true
+  else renderTable()
 })
 
 function updateStatusCounts() {
@@ -348,18 +367,16 @@ function updateStatusCounts() {
 
 function updateStockCells() {
   updateStatusCounts()
-  for (const t of targets) {
-    const cell = document.getElementById(`stock-${t.label}`)
-    if (cell) {
-      const count = stock[t.label]
-      cell.textContent = count === undefined ? '...' : formatCount(count)
-      cell.title = count === undefined ? 'Loading...' : String(count)
-    }
-    const row = document.querySelector(`tr[data-row="${CSS.escape(t.label)}"]`)
-    if (row) {
-      const keep = ['group-first', 'group-middle', 'group-last', 'row-disabled'].filter(c => row.classList.contains(c))
-      row.className = [rowStatusClass(t.label, t), ...keep].filter(Boolean).join(' ')
-    }
+  const byLabel = new Map(targets.map(t => [t.label, t]))
+  for (const row of document.querySelectorAll('#table-container tr[data-row]')) {
+    const t = byLabel.get(row.dataset.row)
+    if (!t) continue
+    const cell = row.querySelector('[data-stock]')
+    const count = stock[t.label]
+    cell.textContent = count === undefined ? '...' : formatCount(count)
+    cell.title = count === undefined ? 'Loading...' : String(count)
+    const keep = ['group-first', 'group-middle', 'group-last', 'row-disabled'].filter(c => row.classList.contains(c))
+    row.className = [rowStatusClass(t.label, t), ...keep].filter(Boolean).join(' ')
   }
 }
 
@@ -530,18 +547,24 @@ function render() {
   document.getElementById('export-file-btn').onclick = exportToFile
   document.getElementById('import-btn').onclick = openImportModal
 
-  document.getElementById('sleep-input').addEventListener('input', (e) => {
-    const val = Math.max(1, Math.floor(Number(e.target.value)))
-    if (!val) return
-    clearTimeout(sleepTimer)
-    sleepTimer = setTimeout(async () => {
-      await fetch(`/api/settings/${networkId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ maintainer_sleep: val })
-      })
-      maintainerSleep = val
-    }, 2000)
+  document.getElementById('sleep-input').addEventListener('change', async (e) => {
+    const val = Math.floor(Number(e.target.value))
+    if (!Number.isFinite(val) || val < 5) {
+      showToast('Check interval must be at least 5s', 'error')
+      e.target.value = maintainerSleep
+      return
+    }
+    const res = await fetch(`/api/settings/${networkId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maintainer_sleep: val })
+    }).catch(() => null)
+    if (!res?.ok) {
+      showToast(msg.saveFailed, 'error')
+      e.target.value = maintainerSleep
+      return
+    }
+    maintainerSleep = val
   })
 
   const sortSelect = document.getElementById('sort-select')
@@ -553,7 +576,9 @@ function render() {
   })
 
   renderNetworkBar()
+  setupTableEvents(document.getElementById('table-container'))
   renderTable()
+  renderAddPanel()
 }
 
 function renderNetworkBar() {
@@ -564,13 +589,12 @@ function renderNetworkBar() {
   bar.innerHTML = `
     <label>Network:
       <select id="network-select">
-        ${networks.map(n => `<option value="${n}"${n === networkId ? ' selected' : ''}>${n}</option>`).join('')}
+        ${networks.map(n => `<option value="${esc(n)}"${n === networkId ? ' selected' : ''}>${esc(n)}</option>`).join('')}
       </select>
     </label>
   `
 
   document.getElementById('network-select').onchange = async (e) => {
-    Object.keys(timers).forEach(k => { clearTimeout(timers[k]); delete timers[k] })
     networkId = e.target.value
     await Promise.all([fetchTargets(), fetchStock()])
     render()
@@ -687,7 +711,7 @@ function renderCollapsedGroupRow(group, grabDisabled) {
       </td>
       <td><div class="group-icons">${icons}${extra}</div></td>
       <td></td>
-      <td colspan="2"><input type="text" class="group-name-input" data-group-id="${group.id}" value="${group.name}"></td>
+      <td colspan="2"><input type="text" class="group-name-input" data-group-id="${group.id}" value="${esc(group.name)}"></td>
       <td><button class="expand-btn" data-group-id="${group.id}">Expand</button></td>
     </tr>
   `
@@ -856,8 +880,105 @@ function setupBracketDrag(container) {
   })
 }
 
+function setupTableEvents(container) {
+  container.addEventListener('click', async (e) => {
+    const el = e.target.closest('[data-delete], [data-toggle], [data-change], .group-toggle-btn, .expand-btn')
+    if (!el) return
+
+    if ('delete' in el.dataset) return removeTarget(el.dataset.delete)
+
+    if ('toggle' in el.dataset) {
+      const label = el.dataset.toggle
+      const t = targets.find(t => t.label === label)
+      if (!t) return
+      await saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 }).catch(() => {})
+      return refreshTargets()
+    }
+
+    if ('change' in el.dataset) {
+      const label = el.dataset.change
+      return openItemPicker(({ label: newLabel, is_fluid }) => {
+        if (newLabel !== label) changeTargetItem(label, newLabel, is_fluid)
+      })
+    }
+
+    const groups = loadGroups()
+    const g = groups.find(g => g.id === parseInt(el.dataset.groupId))
+    if (!g) return
+
+    if (el.classList.contains('expand-btn')) {
+      g.collapsed = false
+      saveGroups(groups)
+      return renderTable()
+    }
+
+    const groupTargets = targets.filter(t => g.labels.includes(t.label))
+    const allEnabled = groupTargets.every(t => t.enabled !== 0)
+    await Promise.all(groupTargets.map(t =>
+      saveTarget(t.label, { threshold: t.threshold, batch_size: t.batch_size, is_fluid: t.is_fluid ?? false, enabled: !allEnabled })
+    )).catch(() => {})
+    refreshTargets()
+  })
+
+  container.addEventListener('focusin', (e) => {
+    const input = e.target
+    if (input.matches('input[data-field]')) {
+      const t = targets.find(x => x.label === input.dataset.label)
+      const raw = t?.[input.dataset.field]
+      if (t) input.value = raw === null || raw === undefined ? '' : raw.toLocaleString()
+    }
+    if (input.matches('input')) input.dataset.saved = input.value
+  })
+
+  container.addEventListener('focusout', (e) => {
+    const input = e.target
+    if (input.matches('input[data-field]')) commitField(input)
+    if (input.matches('.group-name-input')) commitGroupName(input)
+    setTimeout(() => { if (tableStale && !isEditing() && !isDragging) renderTable() })
+  })
+
+  container.addEventListener('keydown', (e) => {
+    if (!e.target.matches('input')) return
+    if (e.key === 'Enter') e.target.blur()
+    if (e.key === 'Escape') {
+      e.target.value = e.target.dataset.saved ?? e.target.value
+      e.target.blur()
+    }
+  })
+}
+
+function commitField(input) {
+  const saved = input.dataset.saved ?? ''
+  const label = input.dataset.label
+  const revert = () => { input.value = saved }
+
+  if (input.value === '') {
+    if (input.dataset.field === 'batch_size') return revert()
+    if (saved !== '') saveTarget(label, getRowData(label)).catch(revert)
+    return
+  }
+  const parsed = parseAmount(input.value)
+  if (parsed === null) {
+    showToast('Invalid format', 'error')
+    return revert()
+  }
+  const changed = input.value !== saved
+  input.value = formatShort(clampAmount(parsed))
+  if (changed) saveTarget(label, getRowData(label)).catch(revert)
+}
+
+function commitGroupName(input) {
+  const groups = loadGroups()
+  const g = groups.find(g => g.id === parseInt(input.dataset.groupId))
+  if (!g) return
+  g.name = input.value.trim() || input.dataset.saved || g.name
+  input.value = g.name
+  saveGroups(groups)
+}
+
 function renderTable() {
   const container = document.getElementById('table-container')
+  tableStale = false
 
   updateStatusCounts()
 
@@ -881,9 +1002,10 @@ function renderTable() {
     const groupCls = entry.type !== 'item' ? entry.type : ''
     const rowClass = [rowStatusClass(t.label, t), enabled ? '' : 'row-disabled', groupCls].filter(Boolean).join(' ')
 
+    const label = esc(t.label)
     return `
-      <tr data-row="${t.label}" class="${rowClass}">
-        <td class="bracket-cell" data-row="${t.label}"></td>
+      <tr data-row="${label}" class="${rowClass}">
+        <td class="bracket-cell" data-row="${label}"></td>
         <td>
           <div class="grab-handle ${grabDisabled ? 'grab-handle-disabled' : ''}">
             <span></span><span></span>
@@ -892,27 +1014,27 @@ function renderTable() {
           </div>
         </td>
         <td>
-          <button class="mc-toggle ${enabled ? 'mc-toggle-on' : 'mc-toggle-off'}" data-toggle="${t.label}">
+          <button class="mc-toggle ${enabled ? 'mc-toggle-on' : 'mc-toggle-off'}" data-toggle="${label}">
             ${enabled ? 'Enabled' : 'Disabled'}
           </button>
         </td>
         <td>
-          <div class="item-slot" data-change="${t.label}">
+          <div class="item-slot" data-change="${label}">
             ${iconHtml(t.x, t.y)}
-            <span>${t.label}</span>
+            <span>${label}</span>
           </div>
         </td>
-        <td id="stock-${t.label}" title="${stockTitle}">${stockDisplay}</td>
+        <td data-stock title="${stockTitle}">${stockDisplay}</td>
         <td>
           <input type="text" value="${thresholdVal}" placeholder="infinite"
-            data-label="${t.label}" data-field="threshold">
+            data-label="${label}" data-field="threshold">
         </td>
         <td>
           <input type="text" value="${batchVal}"
-            data-label="${t.label}" data-field="batch_size">
+            data-label="${label}" data-field="batch_size">
         </td>
         <td>
-          <button data-delete="${t.label}">Delete</button>
+          <button data-delete="${label}">Delete</button>
         </td>
       </tr>
     `
@@ -936,128 +1058,6 @@ function renderTable() {
     </table>
   `
 
-  container.querySelectorAll('input[data-field]').forEach(input => {
-    let savedValue = input.value
-    input.addEventListener('focus', () => {
-      const label = input.dataset.label
-      const field = input.dataset.field
-      const t = targets.find(x => x.label === label)
-      if (t) {
-        const rawVal = t[field]
-        input.value = rawVal === null || rawVal === undefined ? '' : rawVal.toLocaleString()
-      }
-      savedValue = input.value
-    })
-    input.addEventListener('blur', () => {
-      if (input.value === '') {
-        const field = input.dataset.field
-        if (field === 'batch_size') {
-          input.value = savedValue
-          return
-        }
-        if (savedValue !== '') {
-          saveTarget(input.dataset.label, getRowData(input.dataset.label))
-            .catch(() => {
-              input.value = savedValue
-            })
-        }
-        return
-      }
-      let parsed = parseAmount(input.value)
-      if (parsed === null) {
-        showToast('Invalid format', 'error')
-        input.value = savedValue
-        return
-      }
-      if (parsed > 9000000000000000) parsed = 9000000000000000
-      input.value = formatShort(parsed)
-      if (input.value !== savedValue) {
-        saveTarget(input.dataset.label, getRowData(input.dataset.label))
-          .catch(() => {
-            input.value = savedValue
-          })
-      }
-    })
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') input.blur()
-      if (e.key === 'Escape') {
-        input.value = savedValue
-        input.blur()
-      }
-    })
-  })
-
-  container.querySelectorAll('[data-delete]').forEach(btn => {
-    btn.addEventListener('click', () => removeTarget(btn.dataset.delete))
-  })
-
-  container.querySelectorAll('[data-toggle]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const label = btn.dataset.toggle
-      const t = targets.find(t => t.label === label)
-      if (!t) return
-      saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 })
-        .then(fetchTargets)
-        .then(render)
-    })
-  })
-
-  container.querySelectorAll('[data-change]').forEach(slot => {
-    slot.addEventListener('click', () => {
-      const label = slot.dataset.change
-      openItemPicker(({ label: newLabel, is_fluid }) => {
-        if (newLabel !== label) changeTargetItem(label, newLabel, is_fluid)
-      })
-    })
-  })
-
-  container.querySelectorAll('.group-toggle-btn').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const groupId = parseInt(btn.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
-      if (!g) return
-      const groupTargets = targets.filter(t => g.labels.includes(t.label))
-      const allEnabled = groupTargets.every(t => t.enabled !== 0)
-      await Promise.all(groupTargets.map(t =>
-        saveTarget(t.label, { threshold: t.threshold, batch_size: t.batch_size, is_fluid: t.is_fluid ?? false, enabled: !allEnabled })
-      ))
-      await fetchTargets()
-      render()
-    })
-  })
-
-  container.querySelectorAll('.expand-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const groupId = parseInt(btn.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
-      if (!g) return
-      g.collapsed = false
-      saveGroups(groups)
-      renderTable()
-    })
-  })
-
-  container.querySelectorAll('.group-name-input').forEach(input => {
-    let savedName = input.value
-    input.addEventListener('focus', () => { savedName = input.value })
-    input.addEventListener('blur', () => {
-      const groupId = parseInt(input.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
-      if (!g) return
-      g.name = input.value.trim() || savedName
-      input.value = g.name
-      saveGroups(groups)
-    })
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Enter') input.blur()
-      if (e.key === 'Escape') { input.value = savedName; input.blur() }
-    })
-  })
-
-  renderAddPanel()
   setupBracketDrag(container)
 
   let draggedRow = null
@@ -1144,6 +1144,7 @@ function renderTable() {
       }
       isDragging = false
       saveCustomOrder()
+      if (tableStale) renderTable()
     })
     row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
   })
@@ -1154,7 +1155,7 @@ function renderAddPanel() {
   if (!container) return
 
   const slotHtml = pendingAdd
-    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${pendingAdd.label}</span></div>`
+    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${esc(pendingAdd.label)}</span></div>`
     : `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
 
   const threshVal = addDefaults.threshold != null ? formatShort(addDefaults.threshold) : ''
@@ -1203,7 +1204,7 @@ function renderAddPanel() {
       }
       let parsed = parseAmount(input.value)
       if (parsed === null) { showToast('Invalid format', 'error'); input.value = savedValue; return }
-      if (parsed > 9000000000000000) parsed = 9000000000000000
+      parsed = clampAmount(parsed)
       addDefaults[field] = parsed
       if (pendingAdd) pendingAdd[field] = parsed
       input.value = formatShort(parsed)
@@ -1328,14 +1329,9 @@ function getRowData(label) {
   const batchInput = document.querySelector(`input[data-label="${CSS.escape(label)}"][data-field="batch_size"]`)
   const target = targets.find(t => t.label === label)
 
-  let threshold = thresholdInput.value === '' ? null : (parseAmount(thresholdInput.value) ?? Number(thresholdInput.value))
-  if (threshold !== null && threshold > 9000000000000000) threshold = 9000000000000000
-  let batch = parseAmount(batchInput.value) ?? Number(batchInput.value) ?? 1
-  if (batch > 9000000000000000) batch = 9000000000000000
-
   return {
-    threshold,
-    batch_size: batch,
+    threshold: thresholdInput.value === '' ? null : clampAmount(parseAmount(thresholdInput.value)),
+    batch_size: clampAmount(parseAmount(batchInput.value) ?? 1),
     is_fluid: target?.is_fluid ?? false,
     enabled: target ? target.enabled !== 0 : true
   }
