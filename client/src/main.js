@@ -5,7 +5,8 @@ const msg = {
   deleteFailed: 'Failed to delete target: server unreachable.',
   saveFailed: 'Failed to save target: server unreachable or invalid value.',
   serverDown: 'Failed to connect to server. Is it running?',
-  loginFailed: 'Wrong password.'
+  loginFailed: 'Wrong password.',
+  clearSearch: 'Clear your search bar before sorting!'
 }
 
 let networkId = null
@@ -18,8 +19,10 @@ let maintainerSleep = 10
 let pendingAdd = null
 let addDefaults = { threshold: null, batch_size: 1, enabled: true }
 let isDirty = false
-let currentSort = localStorage.getItem('maintainer_sort_mode') || 'default'
 let isDragging = false
+let groupList = []
+let searchQuery = ''
+let username = localStorage.getItem('maintainer_username') || ''
 let tableStale = false
 let ws = null
 
@@ -28,6 +31,26 @@ const clampAmount = n => n === null ? null : Math.min(n, MAX_AMOUNT)
 
 function esc(text) {
   return String(text ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+}
+
+function tokenize(query) {
+  return query.toLowerCase().split(/\s+/).filter(Boolean)
+}
+
+function matchesTokens(text, tokens) {
+  const lower = text.toLowerCase()
+  return tokens.every(t => lower.includes(t))
+}
+
+function send(method, path, body) {
+  return fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  }).then(res => {
+    if (!res.ok) throw new Error(res.status)
+    return res
+  })
 }
 
 function isEditing() {
@@ -127,8 +150,12 @@ async function fetchNetworks() {
 }
 
 async function fetchTargets() {
-  const res = await fetch(`/api/targets/${networkId}`)
-  targets = await res.json()
+  const [t, g] = await Promise.all([
+    fetch(`/api/targets/${networkId}`).then(r => r.json()),
+    fetch(`/api/groups/${networkId}`).then(r => r.json())
+  ])
+  targets = t
+  groupList = g
 }
 
 async function refreshTargets() {
@@ -153,26 +180,87 @@ async function fetchSettings() {
   maintainerSleep = data.maintainer_sleep ?? 10
 }
 
-function showLogin() {
+async function login(name, password = '') {
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: name, password })
+  })
+  if (!res.ok) return false
+  username = name
+  localStorage.setItem('maintainer_username', name)
+  localStorage.removeItem('maintainer_logged_out')
+  return true
+}
+
+async function showLogin() {
+  const { password } = await fetch('/api/auth').then(r => r.json()).catch(() => ({ password: true }))
   app.innerHTML = `
-    <div>
+    <form id="login-form" class="login-form">
       <h1>OC Level Maintainer</h1>
-      <p id="login-error"></p>
-      <input id="login-password" type="password" placeholder="Password">
-      <button id="login-btn">Login</button>
-    </div>
+      <p id="login-error" class="login-error"></p>
+      <input id="login-username" type="text" placeholder="Username" maxlength="32" autocomplete="username" required value="${esc(username)}">
+      ${password ? '<input id="login-password" type="password" placeholder="Password" autocomplete="current-password" required>' : ''}
+      <button type="submit">Login</button>
+    </form>
   `
-  document.getElementById('login-btn').onclick = async () => {
-    const password = document.getElementById('login-password').value
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password })
-    })
-    if (res.ok) {
-      init()
-    } else {
-      document.getElementById('login-error').textContent = msg.loginFailed
+  const nameInput = document.getElementById('login-username')
+  const passwordInput = document.getElementById('login-password')
+  ;(username && passwordInput ? passwordInput : nameInput).focus()
+  document.getElementById('login-form').onsubmit = async (e) => {
+    e.preventDefault()
+    const name = nameInput.value.trim()
+    if (!name) return
+    if (await login(name, passwordInput?.value ?? '')) init()
+    else document.getElementById('login-error').textContent = msg.loginFailed
+  }
+}
+
+async function logout() {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => {})
+  localStorage.setItem('maintainer_logged_out', '1')
+  networkId = null
+  ws?.close()
+  showLogin()
+}
+
+async function changeUsername(name) {
+  try {
+    await send('PUT', '/api/me', { username: name })
+    username = name
+    localStorage.setItem('maintainer_username', name)
+  } catch {
+    showToast('Could not change name', 'error')
+  }
+  renderUserBox()
+}
+
+function renderUserBox() {
+  const box = document.getElementById('user-box')
+  if (!box) return
+  box.innerHTML = `
+    Signed in as <button id="user-name" class="link-btn" title="Click to change your name">${esc(username)}</button>
+    <span>·</span>
+    <button id="logout-btn" class="link-btn">Log out</button>
+  `
+  document.getElementById('logout-btn').onclick = logout
+  document.getElementById('user-name').onclick = () => {
+    box.innerHTML = `<input id="user-name-input" type="text" maxlength="32" value="${esc(username)}">`
+    const input = document.getElementById('user-name-input')
+    input.focus()
+    input.select()
+    let done = false
+    const finish = (save) => {
+      if (done) return
+      done = true
+      const name = input.value.trim()
+      if (save && name && name !== username) changeUsername(name)
+      else renderUserBox()
+    }
+    input.onblur = () => finish(true)
+    input.onkeydown = e => {
+      if (e.key === 'Enter') finish(true)
+      if (e.key === 'Escape') finish(false)
     }
   }
 }
@@ -230,7 +318,9 @@ async function removeTarget(label) {
 }
 
 async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
-  const old = targets.find(t => t.label === oldLabel)
+  const index = targets.findIndex(t => t.label === oldLabel)
+  const old = targets[index]
+  const nextLabel = targets[index + 1]?.label ?? null
   try {
     const res1 = await fetch(`/api/targets/${networkId}/${encodeURIComponent(oldLabel)}`, { method: 'DELETE' })
     if (!res1.ok) throw new Error()
@@ -247,6 +337,7 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
     })
     if (!res2.ok) throw new Error()
     isDirty = true
+    await send('POST', `/api/layout/${networkId}/move`, { labels: [newLabel], before: nextLabel, group_id: old?.group_id ?? null })
     await refreshTargets()
   } catch {
     showToast(msg.saveFailed, 'error')
@@ -289,11 +380,8 @@ function openItemPicker(onSelect) {
 
   function search(q) {
     if (!q) { renderResults([]); return }
-    const tokens = q.toLowerCase().split(/\s+/).filter(Boolean)
-    renderResults(registry.filter(i => {
-      const label = i.label.toLowerCase()
-      return tokens.every(t => label.includes(t))
-    }))
+    const tokens = tokenize(q)
+    renderResults(registry.filter(i => matchesTokens(i.label, tokens)))
   }
 
   search('')
@@ -305,7 +393,7 @@ function openItemPicker(onSelect) {
 }
 
 function connectWs() {
-  if (ws || document.hidden) return
+  if (ws || document.hidden || !networkId) return
   const proto = location.protocol === 'https:' ? 'wss' : 'ws'
   const socket = new WebSocket(`${proto}://${location.host}/ws`)
   ws = socket
@@ -325,6 +413,7 @@ function connectWs() {
     }
     if (data.type === 'targets') {
       targets = data.targets
+      if (data.groups) groupList = data.groups
       if (isDragging || isEditing()) tableStale = true
       else renderTable()
     }
@@ -375,7 +464,7 @@ function updateStockCells() {
     const count = stock[t.label]
     cell.textContent = count === undefined ? '...' : formatCount(count)
     cell.title = count === undefined ? 'Loading...' : String(count)
-    const keep = ['group-first', 'group-middle', 'group-last', 'row-disabled'].filter(c => row.classList.contains(c))
+    const keep = ['group-first', 'group-middle', 'group-last', 'group-single', 'row-disabled'].filter(c => row.classList.contains(c))
     row.className = [rowStatusClass(t.label, t), ...keep].filter(Boolean).join(' ')
   }
 }
@@ -391,8 +480,8 @@ function buildExportBundle() {
       if (t.enabled === 0) out.enabled = false
       return out
     }),
-    groups: JSON.parse(localStorage.getItem(`maintainer_groups_${networkId}`) || '[]'),
-    order: JSON.parse(localStorage.getItem(`maintainer_custom_order_${networkId}`) || 'null'),
+    groups: loadGroups().map(g => ({ name: g.name, labels: g.labels })),
+    order: targets.map(t => t.label),
     settings: { maintainer_sleep: maintainerSleep }
   }
 }
@@ -413,6 +502,32 @@ function exportToFile() {
   a.download = `oc-maintainer-${networkId}-${new Date().toISOString().slice(0, 10)}.json`
   a.click()
   URL.revokeObjectURL(a.href)
+}
+
+function uploadLayout(order, groups) {
+  return send('PUT', `/api/layout/${networkId}`, {
+    order,
+    groups: groups.filter(g => Array.isArray(g?.labels)).map(g => ({ name: g.name, labels: g.labels }))
+  })
+}
+
+async function migrateLocalLayout() {
+  const orderKey = `maintainer_custom_order_${networkId}`
+  const groupKey = `maintainer_groups_${networkId}`
+  const rawOrder = localStorage.getItem(orderKey)
+  const rawGroups = localStorage.getItem(groupKey)
+  if (!rawOrder && !rawGroups) return
+  const untouched = groupList.length === 0 && targets.every(t => t.position === 0)
+  try {
+    if (untouched) {
+      const order = JSON.parse(rawOrder || 'null') ?? targets.map(t => t.label)
+      await uploadLayout(order, JSON.parse(rawGroups || '[]'))
+      await fetchTargets()
+    }
+    localStorage.removeItem(orderKey)
+    localStorage.removeItem(groupKey)
+    localStorage.removeItem('maintainer_sort_mode')
+  } catch {}
 }
 
 function validateBundle(data) {
@@ -437,8 +552,10 @@ async function importBundle(data) {
   })
   if (!res.ok) { showToast('Import failed: server rejected data', 'error'); return }
 
-  if (Array.isArray(data.groups)) localStorage.setItem(`maintainer_groups_${networkId}`, JSON.stringify(data.groups))
-  if (data.order) localStorage.setItem(`maintainer_custom_order_${networkId}`, JSON.stringify(data.order))
+  await uploadLayout(
+    Array.isArray(data.order) ? data.order : data.targets.map(t => t.label),
+    Array.isArray(data.groups) ? data.groups : []
+  ).catch(() => showToast('Imported targets, but groups/order failed to save', 'error'))
 
   if (data.settings?.maintainer_sleep) {
     await fetch(`/api/settings/${networkId}`, {
@@ -498,8 +615,89 @@ function openImportModal() {
   }
 }
 
+function timeAgo(at) {
+  const secs = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (secs < 60) return `${secs}s ago`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
+  return `${Math.floor(secs / 86400)}d ago`
+}
+
+let registryIcons = null
+
+function auditItem(label) {
+  registryIcons ??= new Map(registry.map(r => [r.label, r]))
+  const reg = registryIcons.get(label)
+  return `<span class="history-item">${iconHtml(reg?.x, reg?.y)}${esc(label)}</span>`
+}
+
+function describeAudit(e) {
+  const amount = v => v === null ? 'infinite' : formatShort(v)
+  const field = e.field === 'batch_size' ? 'batch size' : e.field
+  if (e.action === 'import') return `imported ${esc(e.new_value)} targets`
+  if (e.action === 'create') return `<span class="audit-added">added</span> ${auditItem(e.label)}`
+  if (e.action === 'remove') return `<span class="audit-removed">removed</span> ${auditItem(e.label)}`
+  if (e.action === 'enable' || e.action === 'disable') return `${e.action}d ${auditItem(e.label)}`
+  const subject = e.label ? `${auditItem(e.label)} ${esc(field)}` : esc(field)
+  return `changed ${subject} ${amount(e.old_value)} → ${amount(e.new_value)}`
+}
+
+function openHistoryModal() {
+  const overlay = document.createElement('div')
+  overlay.className = 'picker-overlay'
+  overlay.innerHTML = `
+    <div class="picker-modal history-modal">
+      <div class="picker-header">
+        <input id="history-filter" type="text" placeholder="Filter by item or user..." autocomplete="off">
+        <button id="picker-close">X</button>
+      </div>
+      <div id="history-list" class="history-list"></div>
+      <div class="history-footer"><button id="history-more" hidden>Load older</button></div>
+    </div>
+  `
+  document.body.appendChild(overlay)
+  const list = overlay.querySelector('#history-list')
+  const filter = overlay.querySelector('#history-filter')
+  const more = overlay.querySelector('#history-more')
+  const entries = []
+
+  function draw() {
+    const tokens = tokenize(filter.value)
+    const shown = entries.filter(e => matchesTokens(`${e.user} ${e.label ?? ''} ${e.field ?? ''} ${e.action}`, tokens))
+    list.innerHTML = shown.map(e => `
+      <div class="history-row">
+        <span class="history-time" title="${esc(new Date(e.at).toLocaleString())}">${timeAgo(e.at)}</span>
+        <span class="history-user">${esc(e.user)}</span>
+        <span class="history-text">${describeAudit(e)}</span>
+      </div>
+    `).join('') || '<p class="history-empty">No changes recorded yet.</p>'
+  }
+
+  async function loadPage() {
+    more.disabled = true
+    const before = entries.length ? `?before=${entries[entries.length - 1].id}` : ''
+    try {
+      const page = await fetch(`/api/audit/${networkId}${before}`).then(r => r.json())
+      entries.push(...page)
+      more.hidden = page.length < 200
+    } catch {
+      showToast('Failed to load history', 'error')
+    }
+    more.disabled = false
+    draw()
+  }
+
+  filter.addEventListener('input', draw)
+  more.onclick = loadPage
+  overlay.querySelector('#picker-close').onclick = () => overlay.remove()
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove() }
+  filter.focus()
+  loadPage()
+}
+
 function render() {
   app.innerHTML = `
+    <div class="top-bar"><span id="user-box" class="user-box"></span></div>
     <div class="page-header">
       <div class="title-container">
         <h1>OC Level Maintainer</h1>
@@ -514,6 +712,7 @@ function render() {
         </span>
       </div>
       <div class="header-actions">
+        <button id="history-btn">History</button>
         <button id="export-copy-btn">Copy</button>
         <button id="export-file-btn">Export</button>
         <button id="import-btn">Import</button>
@@ -523,17 +722,7 @@ function render() {
     <div class="table-toolbar">
       <div id="status-counts" class="status-counts"></div>
       <div class="toolbar-right">
-        <div class="sort-container">
-          <label for="sort-select">Sort by:</label>
-          <select id="sort-select">
-            <option value="default">Default</option>
-            <option value="az">Alphabetical A-Z</option>
-            <option value="za">Alphabetical Z-A</option>
-            <option value="threshold-lh">Threshold (Low to High)</option>
-            <option value="threshold-hl">Threshold (High to Low)</option>
-            <option value="custom">Custom (Drag & Drop)</option>
-          </select>
-        </div>
+        <input id="table-search" class="table-search" type="search" placeholder="Search items or groups..." autocomplete="off" value="${esc(searchQuery)}">
         <label class="sleep-setting">Check every <input id="sleep-input" type="number" min="5" value="${maintainerSleep}"> s</label>
       </div>
     </div>
@@ -546,6 +735,8 @@ function render() {
   document.getElementById('export-copy-btn').onclick = exportToClipboard
   document.getElementById('export-file-btn').onclick = exportToFile
   document.getElementById('import-btn').onclick = openImportModal
+  document.getElementById('history-btn').onclick = openHistoryModal
+  renderUserBox()
 
   document.getElementById('sleep-input').addEventListener('change', async (e) => {
     const val = Math.floor(Number(e.target.value))
@@ -567,12 +758,13 @@ function render() {
     maintainerSleep = val
   })
 
-  const sortSelect = document.getElementById('sort-select')
-  sortSelect.value = currentSort
-  sortSelect.addEventListener('change', (e) => {
-    currentSort = e.target.value
-    localStorage.setItem('maintainer_sort_mode', currentSort)
+  const search = document.getElementById('table-search')
+  search.addEventListener('input', () => {
+    searchQuery = search.value.trim()
     renderTable()
+  })
+  search.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { search.value = ''; searchQuery = ''; renderTable() }
   })
 
   renderNetworkBar()
@@ -611,94 +803,62 @@ function rowStatusClass(label, target) {
   return ''
 }
 
-function getSortedTargets() {
-  const list = [...targets]
-  if (currentSort === 'az') {
-    list.sort((a, b) => a.label.localeCompare(b.label))
-  } else if (currentSort === 'za') {
-    list.sort((a, b) => b.label.localeCompare(a.label))
-  } else if (currentSort === 'threshold-lh') {
-    list.sort((a, b) => {
-      const ta = a.threshold === null ? Infinity : a.threshold
-      const tb = b.threshold === null ? Infinity : b.threshold
-      return ta - tb
-    })
-  } else if (currentSort === 'threshold-hl') {
-    list.sort((a, b) => {
-      const ta = a.threshold === null ? Infinity : a.threshold
-      const tb = b.threshold === null ? Infinity : b.threshold
-      return tb - ta
-    })
-  } else if (currentSort === 'custom') {
-    const savedOrder = JSON.parse(localStorage.getItem(`maintainer_custom_order_${networkId}`) || '[]')
-    if (savedOrder.length > 0) {
-      const activeLabels = new Set(targets.map(t => t.label))
-      const cleanedOrder = savedOrder.filter(label => activeLabels.has(label))
-      const orderMap = new Map(cleanedOrder.map((label, idx) => [label, idx]))
-      list.sort((a, b) => {
-        const idxA = orderMap.has(a.label) ? orderMap.get(a.label) : Infinity
-        const idxB = orderMap.has(b.label) ? orderMap.get(b.label) : Infinity
-        return idxA - idxB
-      })
-    }
-  }
-  return list
+function collapsedKey() {
+  return `maintainer_collapsed_${networkId}`
+}
+
+function setCollapsed(id, collapsed) {
+  const ids = new Set(JSON.parse(localStorage.getItem(collapsedKey()) || '[]'))
+  if (collapsed) ids.add(id)
+  else ids.delete(id)
+  localStorage.setItem(collapsedKey(), JSON.stringify([...ids]))
+  renderTable()
 }
 
 function loadGroups() {
-  if (!networkId) return []
-  const groups = JSON.parse(localStorage.getItem(`maintainer_groups_${networkId}`) || '[]')
-  const validLabels = new Set(targets.map(t => t.label))
-  return groups
-    .map(g => ({ ...g, labels: g.labels.filter(l => validLabels.has(l)) }))
+  const collapsed = new Set(JSON.parse(localStorage.getItem(collapsedKey()) || '[]'))
+  return groupList
+    .map(g => ({ ...g, collapsed: collapsed.has(g.id), labels: targets.filter(t => t.group_id === g.id).map(t => t.label) }))
     .filter(g => g.labels.length >= 2)
 }
 
-function saveGroups(groups) {
-  localStorage.setItem(`maintainer_groups_${networkId}`, JSON.stringify(groups))
-}
-
-function buildRowPlan(sortedTargets, groups) {
-  const labelToGroup = new Map()
-  for (const g of groups) {
-    for (const label of g.labels) labelToGroup.set(label, g)
-  }
+function buildRowPlan(groups, tokens) {
+  const byId = new Map(groups.map(g => [g.id, g]))
   const plan = []
   const seen = new Set()
-  for (const t of sortedTargets) {
-    const group = labelToGroup.get(t.label)
+  for (const t of targets) {
+    const group = byId.get(t.group_id)
     if (!group) {
-      plan.push({ type: 'item', target: t })
+      if (matchesTokens(t.label, tokens)) plan.push({ type: 'item', target: t })
       continue
     }
     if (seen.has(group.id)) continue
     seen.add(group.id)
-    if (group.collapsed) {
+    const members = targets.filter(x => x.group_id === group.id)
+    const shown = matchesTokens(group.name, tokens) ? members : members.filter(x => matchesTokens(x.label, tokens))
+    if (shown.length === 0) continue
+    if (group.collapsed && tokens.length === 0) {
       plan.push({ type: 'group-collapsed', group })
-    } else {
-      const members = sortedTargets.filter(x => group.labels.includes(x.label))
-      members.forEach((gt, i) => {
-        const pos = i === 0 ? 'first' : i === members.length - 1 ? 'last' : 'middle'
-        plan.push({ type: 'group-' + pos, target: gt, group })
-      })
+      continue
     }
+    shown.forEach((gt, i) => {
+      const pos = shown.length === 1 ? 'single' : i === 0 ? 'first' : i === shown.length - 1 ? 'last' : 'middle'
+      plan.push({ type: 'group-' + pos, target: gt, group })
+    })
   }
   return plan
 }
 
-function renderCollapsedGroupRow(group, grabDisabled) {
-  const icons = group.labels.slice(0, 5).map(label => {
-    const reg = registry.find(r => r.label === label)
-    return iconHtml(reg?.x, reg?.y)
-  }).join('')
-  const extra = group.labels.length > 5 ? `<span class="group-extra-count">+${group.labels.length - 5}</span>` : ''
-  const groupTargets = targets.filter(t => group.labels.includes(t.label))
-  const allEnabled = groupTargets.length > 0 && groupTargets.every(t => t.enabled !== 0)
+function renderCollapsedGroupRow(group) {
+  const members = targets.filter(t => t.group_id === group.id)
+  const icons = members.slice(0, 5).map(t => iconHtml(t.x, t.y)).join('')
+  const extra = members.length > 5 ? `<span class="group-extra-count">+${members.length - 5}</span>` : ''
+  const allEnabled = members.every(t => t.enabled !== 0)
   return `
     <tr class="group-collapsed-row" data-group-id="${group.id}">
-      <td class="bracket-cell bracket-collapse-zone" data-group-id="${group.id}"></td>
+      <td class="bracket-cell bracket-collapse-zone" data-group-id="${group.id}" title="${esc(group.name)}"></td>
       <td>
-        <div class="grab-handle ${grabDisabled ? 'grab-handle-disabled' : ''}">
+        <div class="grab-handle">
           <span></span><span></span>
           <span></span><span></span>
           <span></span><span></span>
@@ -715,6 +875,15 @@ function renderCollapsedGroupRow(group, grabDisabled) {
       <td><button class="expand-btn" data-group-id="${group.id}">Expand</button></td>
     </tr>
   `
+}
+
+async function layoutRequest(method, path, body) {
+  try {
+    await send(method, path, body)
+  } catch {
+    showToast(msg.saveFailed, 'error')
+  }
+  refreshTargets()
 }
 
 function setupBracketDrag(container) {
@@ -754,77 +923,35 @@ function setupBracketDrag(container) {
   function commitGroup(startIdx, endIdx) {
     const lo = Math.min(startIdx, endIdx)
     const hi = Math.max(startIdx, endIdx)
+    const rows = getRows()
+    const groups = loadGroups()
+
     if (lo === hi) {
-      const rows = getRows()
-      const row = rows[lo]
-      if (!row || !row.dataset.row) return
-      const isGrouped = ['group-first', 'group-middle', 'group-last'].some(c => row.classList.contains(c))
-      if (!isGrouped) return
-      const groups = loadGroups()
-      const g = groups.find(g => g.labels.includes(row.dataset.row))
-      if (!g) return
-      g.collapsed = true
-      saveGroups(groups)
-      renderTable()
+      const label = rows[lo]?.dataset.row
+      const g = label && groups.find(g => g.labels.includes(label))
+      if (g) setCollapsed(g.id, true)
       return
     }
 
-    const rows = getRows()
-    const groups = loadGroups()
-    const newLabels = []
-    const overlapping = []
-    const seenOverlap = new Set()
-
-    for (let i = lo; i <= hi; i++) {
-      const row = rows[i]
-      if (!row) continue
-      if (row.dataset.row) {
-        newLabels.push(row.dataset.row)
-        const g = groups.find(gr => gr.labels.includes(row.dataset.row))
-        if (g && !seenOverlap.has(g.id)) { seenOverlap.add(g.id); overlapping.push(g) }
-      } else if (row.dataset.groupId) {
-        const g = groups.find(gr => gr.id === parseInt(row.dataset.groupId))
-        if (g) {
-          newLabels.push(...g.labels)
-          if (!seenOverlap.has(g.id)) { seenOverlap.add(g.id); overlapping.push(g) }
-        }
-      }
+    const labels = []
+    for (const row of rows.slice(lo, hi + 1)) {
+      if (row.dataset.row) labels.push(row.dataset.row)
+      else labels.push(...(groups.find(g => g.id === parseInt(row.dataset.groupId))?.labels ?? []))
     }
-
-    if (newLabels.length < 2) return
-
-    const newLabelSet = new Set(newLabels)
-
-    const kept = groups
-      .map(g => ({ ...g, labels: g.labels.filter(l => !newLabelSet.has(l)) }))
-      .filter(g => g.labels.length >= 2)
-
-    const id = kept.length === 0 ? 1 : Math.max(...kept.map(g => g.id)) + 1
-    const name = overlapping.length > 0 ? overlapping[0].name : 'Group ' + id
-    kept.push({ id, name, labels: newLabels, collapsed: false })
-    saveGroups(kept)
-    renderTable()
+    if (labels.length >= 2) layoutRequest('POST', `/api/groups/${networkId}`, { labels })
   }
 
   container.querySelectorAll('td.bracket-cell').forEach(cell => {
-    cell.addEventListener('click', (e) => {
-      if (currentSort !== 'custom') return
+    cell.addEventListener('click', () => {
       if (!cell.classList.contains('bracket-collapse-zone')) return
-      const row = cell.closest('tr')
-      const groupId = parseInt(row.dataset.groupId)
-      const groups = loadGroups()
-      const g = groups.find(g => g.id === groupId)
-      if (!g) return
-      g.collapsed = false
-      saveGroups(groups)
-      renderTable()
+      setCollapsed(parseInt(cell.closest('tr').dataset.groupId), false)
     })
 
     cell.addEventListener('mousedown', (e) => {
-      if (currentSort !== 'custom') return
       if (cell.classList.contains('bracket-collapse-zone')) return
       if (e.button !== 0) return
       e.preventDefault()
+      if (searchQuery) return showToast(msg.clearSearch, 'error')
 
       const rows = getRows()
       const startIdx = rows.indexOf(cell.closest('tr'))
@@ -833,27 +960,28 @@ function setupBracketDrag(container) {
       isDragging = true
       setPreview(startIdx, startIdx)
 
+      function stop() {
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+        document.removeEventListener('keydown', onKey)
+        isDragging = false
+        clearPreview()
+      }
+
       function onMove(e) {
         const cur = rowIndexAt(e.clientY)
         setPreview(Math.min(startIdx, cur), Math.max(startIdx, cur))
       }
 
       function onUp(e) {
-        document.removeEventListener('mousemove', onMove)
-        document.removeEventListener('mouseup', onUp)
-        document.removeEventListener('keydown', onKey)
-        isDragging = false
-        clearPreview()
+        stop()
         commitGroup(startIdx, rowIndexAt(e.clientY))
       }
 
       function onKey(e) {
         if (e.key !== 'Escape') return
-        document.removeEventListener('mousemove', onMove)
-        document.removeEventListener('mouseup', onUp)
-        document.removeEventListener('keydown', onKey)
-        isDragging = false
-        clearPreview()
+        stop()
+        if (tableStale) renderTable()
       }
 
       document.addEventListener('mousemove', onMove)
@@ -862,20 +990,14 @@ function setupBracketDrag(container) {
     })
 
     cell.addEventListener('contextmenu', (e) => {
-      if (currentSort !== 'custom') return
       e.preventDefault()
+      if (searchQuery) return showToast(msg.clearSearch, 'error')
       const row = cell.closest('tr')
-      const groups = loadGroups()
-      let groupId = null
-      if (row.dataset.groupId) {
-        groupId = parseInt(row.dataset.groupId)
-      } else if (row.dataset.row) {
-        const g = groups.find(g => g.labels.includes(row.dataset.row))
-        if (g) groupId = g.id
-      }
-      if (groupId === null) return
-      saveGroups(groups.filter(g => g.id !== groupId))
-      renderTable()
+      const groupId = row.dataset.groupId
+        ? parseInt(row.dataset.groupId)
+        : targets.find(t => t.label === row.dataset.row)?.group_id
+      if (groupId == null) return
+      layoutRequest('DELETE', `/api/groups/${networkId}/${groupId}`)
     })
   })
 }
@@ -906,11 +1028,7 @@ function setupTableEvents(container) {
     const g = groups.find(g => g.id === parseInt(el.dataset.groupId))
     if (!g) return
 
-    if (el.classList.contains('expand-btn')) {
-      g.collapsed = false
-      saveGroups(groups)
-      return renderTable()
-    }
+    if (el.classList.contains('expand-btn')) return setCollapsed(g.id, false)
 
     const groupTargets = targets.filter(t => g.labels.includes(t.label))
     const allEnabled = groupTargets.every(t => t.enabled !== 0)
@@ -968,12 +1086,12 @@ function commitField(input) {
 }
 
 function commitGroupName(input) {
-  const groups = loadGroups()
-  const g = groups.find(g => g.id === parseInt(input.dataset.groupId))
-  if (!g) return
-  g.name = input.value.trim() || input.dataset.saved || g.name
-  input.value = g.name
-  saveGroups(groups)
+  const name = input.value.trim()
+  if (!name || name === input.dataset.saved) {
+    input.value = input.dataset.saved ?? input.value
+    return
+  }
+  layoutRequest('PUT', `/api/groups/${networkId}/${input.dataset.groupId}`, { name })
 }
 
 function renderTable() {
@@ -982,15 +1100,10 @@ function renderTable() {
 
   updateStatusCounts()
 
-  const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
-  const grabDisabled = currentSort !== 'custom' && hasCustomOrder
-
-  const sortedTargets = getSortedTargets()
-  const groups = currentSort === 'custom' ? loadGroups() : []
-  const plan = buildRowPlan(sortedTargets, groups)
+  const plan = buildRowPlan(loadGroups(), tokenize(searchQuery))
 
   const rows = plan.map(entry => {
-    if (entry.type === 'group-collapsed') return renderCollapsedGroupRow(entry.group, grabDisabled)
+    if (entry.type === 'group-collapsed') return renderCollapsedGroupRow(entry.group)
 
     const t = entry.target
     const count = stock[t.label]
@@ -1005,9 +1118,9 @@ function renderTable() {
     const label = esc(t.label)
     return `
       <tr data-row="${label}" class="${rowClass}">
-        <td class="bracket-cell" data-row="${label}"></td>
+        <td class="bracket-cell" data-row="${label}"${entry.group ? ` title="${esc(entry.group.name)}"` : ''}></td>
         <td>
-          <div class="grab-handle ${grabDisabled ? 'grab-handle-disabled' : ''}">
+          <div class="grab-handle">
             <span></span><span></span>
             <span></span><span></span>
             <span></span><span></span>
@@ -1044,7 +1157,7 @@ function renderTable() {
     <table>
       <thead>
         <tr>
-          <th></th>
+          <th class="bracket-hint">${groupList.length ? '' : '↓ drag here to group'}</th>
           <th></th>
           <th></th>
           <th>Item</th>
@@ -1056,11 +1169,13 @@ function renderTable() {
       </thead>
       <tbody>${rows}</tbody>
     </table>
+    ${plan.length === 0 && searchQuery ? '<p class="empty-search">No items or groups match your search.</p>' : ''}
   `
 
   setupBracketDrag(container)
 
   let draggedRow = null
+  let startNext = null
 
   function moveDraggedTo(e, targetRow) {
     e.preventDefault()
@@ -1072,80 +1187,58 @@ function renderTable() {
     targetRow.parentNode.insertBefore(draggedRow, anchor)
   }
 
-  container.querySelectorAll('tr[data-row]').forEach(row => {
-    let dragAllowed = false
-    row.addEventListener('mousedown', (e) => {
-      dragAllowed = !!e.target.closest('.grab-handle')
-    })
+  function firstLabel(row) {
+    if (!row) return null
+    if (row.dataset.row) return row.dataset.row
+    return targets.find(t => t.group_id === parseInt(row.dataset.groupId))?.label ?? null
+  }
 
-    row.setAttribute('draggable', 'true')
+  function neighborGroup(row) {
+    const groupOf = r => r?.dataset.row ? targets.find(t => t.label === r.dataset.row)?.group_id ?? null : null
+    const prev = groupOf(row.previousElementSibling)
+    return prev !== null && prev === groupOf(row.nextElementSibling) ? prev : null
+  }
 
-    row.addEventListener('dragstart', (e) => {
-      const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
-      if (currentSort !== 'custom' && hasCustomOrder) {
-        e.preventDefault()
-        showToast("Switch to 'Custom' sorting to drag and reorder items.", "error")
-        return
-      }
-      if (!dragAllowed) {
-        e.preventDefault()
-        return
-      }
-      draggedRow = row
-      isDragging = true
-      row.classList.add('dragging')
-      e.dataTransfer.effectAllowed = 'move'
-    })
-
-    const handle = row.querySelector('.grab-handle')
-    if (handle) {
-      handle.addEventListener('click', () => {
-        const hasCustomOrder = !!localStorage.getItem(`maintainer_custom_order_${networkId}`)
-        if (currentSort !== 'custom' && hasCustomOrder) {
-          showToast("Switch to 'Custom' sorting to drag and reorder items.", "error")
-        }
-      })
-    }
-
-    row.addEventListener('dragend', () => {
-      if (draggedRow) {
-        draggedRow.classList.remove('dragging')
-        const label = draggedRow.dataset.row
-        draggedRow = null
-        isDragging = false
-        saveCustomOrder()
-        autoJoinGroup(label)
-      } else {
-        isDragging = false
-      }
-    })
-
-    row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
-  })
-
-  container.querySelectorAll('tr[data-group-id]').forEach(row => {
+  container.querySelectorAll('tr[data-row], tr[data-group-id]').forEach(row => {
     let dragAllowed = false
     row.addEventListener('mousedown', (e) => {
       dragAllowed = !!e.target.closest('.grab-handle')
     })
     row.setAttribute('draggable', 'true')
+
     row.addEventListener('dragstart', (e) => {
-      if (currentSort !== 'custom') { e.preventDefault(); return }
       if (!dragAllowed) { e.preventDefault(); return }
+      if (searchQuery) {
+        e.preventDefault()
+        showToast(msg.clearSearch, 'error')
+        return
+      }
       draggedRow = row
+      startNext = row.nextElementSibling
       isDragging = true
       row.classList.add('dragging')
       e.dataTransfer.effectAllowed = 'move'
     })
+
     row.addEventListener('dragend', () => {
-      if (draggedRow) {
-        draggedRow.classList.remove('dragging')
-        draggedRow = null
-      }
       isDragging = false
-      saveCustomOrder()
-      if (tableStale) renderTable()
+      if (!draggedRow) return
+      draggedRow.classList.remove('dragging')
+      draggedRow = null
+      if (row.nextElementSibling === startNext) {
+        if (tableStale) renderTable()
+        return
+      }
+      const before = firstLabel(row.nextElementSibling)
+      if (row.dataset.row) {
+        layoutRequest('POST', `/api/layout/${networkId}/move`, { labels: [row.dataset.row], before, group_id: neighborGroup(row) })
+      } else {
+        const groupId = parseInt(row.dataset.groupId)
+        const labels = targets.filter(t => t.group_id === groupId).map(t => t.label)
+        layoutRequest('POST', `/api/layout/${networkId}/move`, { labels, before, group_id: groupId })
+      }
     })
+
     row.addEventListener('dragover', (e) => moveDraggedTo(e, row))
   })
 }
@@ -1246,84 +1339,6 @@ function renderAddPanel() {
   }
 }
 
-function autoJoinGroup(label) {
-  if (currentSort !== 'custom') return
-  const tbody = document.querySelector('table tbody')
-  if (!tbody) return
-  const row = tbody.querySelector(`tr[data-row="${CSS.escape(label)}"]`)
-  if (!row) return
-
-  let groups = loadGroups()
-
-  // Remove from current group if it's in one
-  const currentGroup = groups.find(g => g.labels.includes(label))
-  if (currentGroup) {
-    groups = groups
-      .map(g => g.id === currentGroup.id ? { ...g, labels: g.labels.filter(l => l !== label) } : g)
-      .filter(g => g.labels.length >= 2)
-    saveGroups(groups)
-  }
-
-  // Only auto-join if both immediate neighbors are regular item rows in the same group
-  const prev = row.previousElementSibling
-  const next = row.nextElementSibling
-  if (!prev?.dataset?.row || !next?.dataset?.row) { renderTable(); return }
-
-  const labelToGroup = new Map()
-  for (const g of groups) for (const l of g.labels) labelToGroup.set(l, g)
-
-  const prevGroup = labelToGroup.get(prev.dataset.row)
-  const nextGroup = labelToGroup.get(next.dataset.row)
-  if (!prevGroup || !nextGroup || prevGroup.id !== nextGroup.id) { renderTable(); return }
-
-  groups = groups.map(g => g.id === prevGroup.id ? { ...g, labels: [...g.labels, label] } : g)
-  saveGroups(groups)
-  renderTable()
-}
-
-function saveCustomOrder() {
-  const groups = loadGroups()
-  const seenGroupIds = new Set()
-  const rowLabels = []
-  for (const row of document.querySelectorAll('table tbody tr')) {
-    if (row.dataset.row) {
-      rowLabels.push(row.dataset.row)
-    } else if (row.dataset.groupId) {
-      const gid = parseInt(row.dataset.groupId)
-      if (seenGroupIds.has(gid)) continue
-      seenGroupIds.add(gid)
-      const g = groups.find(g => g.id === gid)
-      if (g) rowLabels.push(...g.labels)
-    }
-  }
-  if (currentSort !== 'custom') {
-    const oldCustomOrder = localStorage.getItem(`maintainer_custom_order_${networkId}`)
-    const oldSortMode = currentSort
-    currentSort = 'custom'
-    localStorage.setItem('maintainer_sort_mode', 'custom')
-    const select = document.getElementById('sort-select')
-    if (select) select.value = 'custom'
-    
-    showToast('Switched to Custom sorting.', 'success', {
-      text: 'Undo',
-      callback: () => {
-        currentSort = oldSortMode
-        localStorage.setItem('maintainer_sort_mode', oldSortMode)
-        if (oldCustomOrder) {
-          localStorage.setItem(`maintainer_custom_order_${networkId}`, oldCustomOrder)
-        } else {
-          localStorage.removeItem(`maintainer_custom_order_${networkId}`)
-        }
-        const select2 = document.getElementById('sort-select')
-        if (select2) select2.value = oldSortMode
-        renderTable()
-        showToast('Reverted sort changes.', 'success')
-      }
-    })
-  }
-  localStorage.setItem(`maintainer_custom_order_${networkId}`, JSON.stringify(rowLabels))
-}
-
 function getRowData(label) {
   const thresholdInput = document.querySelector(`input[data-label="${CSS.escape(label)}"][data-field="threshold"]`)
   const batchInput = document.querySelector(`input[data-label="${CSS.escape(label)}"][data-field="batch_size"]`)
@@ -1340,9 +1355,16 @@ function getRowData(label) {
 async function init() {
   try {
     networks = await fetchNetworks()
-    if (networks === null) { showLogin(); return }
+    if (networks === null) {
+      const canAutoLogin = username && !localStorage.getItem('maintainer_logged_out')
+      if (canAutoLogin && await login(username)) return init()
+      return showLogin()
+    }
+    const me = await fetch('/api/me').then(r => r.json())
+    username = me.username
     networkId = networks[0] || 'main'
     await Promise.all([fetchTargets(), fetchStock(), fetchRegistry(), fetchSettings()])
+    await migrateLocalLayout()
     render()
     connectWs()
   } catch {

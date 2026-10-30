@@ -2,7 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import { createServer } from 'http'
 import { WebSocketServer } from 'ws'
-import { randomBytes } from 'crypto'
+import { createHmac, timingSafeEqual } from 'crypto'
 import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
@@ -15,7 +15,9 @@ function withIcons(targets) {
   return targets.map(t => ({ ...t, ...iconMap.get(t.label) }))
 }
 import {
-  getTargets, upsertTarget, deleteTarget, replaceTargets,
+  getTargets, getTarget, upsertTarget, deleteTarget, replaceTargets,
+  getGroups, moveTargets, createGroup, renameGroup, deleteGroup, replaceLayout,
+  audit, getAudit,
   getStock, getNetworks,
   updateStock,
   getSettings, setSettings
@@ -25,7 +27,8 @@ if (!process.env.BROWSER_PASSWORD) {
   console.log('WARNING : No BROWSER_PASSWORD in .env, anyone can access the page with link!')
 }
 
-const sessions = new Set()
+const SESSION_MS = 30 * 24 * 60 * 60 * 1000
+const sessionSecret = process.env.BROWSER_PASSWORD || 'no-password'
 
 function parseCookie(req, name) {
   for (const part of (req.headers.cookie ?? '').split(';')) {
@@ -35,10 +38,37 @@ function parseCookie(req, name) {
   return null
 }
 
+function sign(payload) {
+  return createHmac('sha256', sessionSecret).update(payload).digest('base64url')
+}
+
+function issueSession(res, username) {
+  const payload = Buffer.from(JSON.stringify({ u: username, t: Date.now() })).toString('base64url')
+  res.cookie('session', `${payload}.${sign(payload)}`, { httpOnly: true, sameSite: 'lax', maxAge: SESSION_MS })
+}
+
+function sessionUser(req) {
+  const [payload, sig] = (parseCookie(req, 'session') ?? '').split('.')
+  if (!payload || !sig) return null
+  const expected = Buffer.from(sign(payload))
+  const given = Buffer.from(sig)
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return null
+  try {
+    const { u, t } = JSON.parse(Buffer.from(payload, 'base64url').toString())
+    if (Date.now() - t > SESSION_MS) return null
+    return typeof u === 'string' ? u : null
+  } catch { return null }
+}
+
+function parseUsername(value) {
+  const name = typeof value === 'string' ? value.trim() : ''
+  return name && name.length <= 32 ? name : null
+}
+
 function browserAuth(req, res, next) {
-  if (!process.env.BROWSER_PASSWORD) return next()
-  if (sessions.has(parseCookie(req, 'session'))) return next()
-  res.status(401).end()
+  req.user = sessionUser(req)
+  if (!req.user) return res.status(401).end()
+  next()
 }
 
 const app = express()
@@ -78,6 +108,10 @@ function broadcast(data) {
   }
 }
 
+function broadcastTargets(networkId) {
+  broadcast({ type: 'targets', network_id: networkId, targets: withIcons(getTargets(networkId)), groups: getGroups(networkId) })
+}
+
 app.post('/api/sync', auth, rateLimit, (req, res) => {
   const { network_id, stock, status } = req.body
   if (!network_id) return res.status(400).json({ error: 'network_id required' })
@@ -102,12 +136,33 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
   res.json({ targets: ocTargets, maintainer_sleep: settings.maintainer_sleep })
 })
 
-
 app.post('/api/login', (req, res) => {
-  if (req.body.password !== process.env.BROWSER_PASSWORD) return res.status(401).end()
-  const token = randomBytes(16).toString('hex')
-  sessions.add(token)
-  res.cookie('session', token, { httpOnly: true })
+  const username = parseUsername(req.body?.username)
+  if (!username) return res.status(400).json({ error: 'username required' })
+  if (process.env.BROWSER_PASSWORD && req.body.password !== process.env.BROWSER_PASSWORD) {
+    return res.status(401).json({ error: 'wrong password' })
+  }
+  issueSession(res, username)
+  res.json({ username })
+})
+
+app.get('/api/auth', (req, res) => {
+  res.json({ password: !!process.env.BROWSER_PASSWORD })
+})
+
+app.get('/api/me', browserAuth, (req, res) => {
+  res.json({ username: req.user })
+})
+
+app.put('/api/me', browserAuth, (req, res) => {
+  const username = parseUsername(req.body?.username)
+  if (!username) return res.status(400).json({ error: 'username required' })
+  issueSession(res, username)
+  res.json({ username })
+})
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie('session')
   res.json({ ok: true })
 })
 
@@ -135,6 +190,18 @@ function parseTarget(body) {
   }
 }
 
+function auditChanges(req, before, after) {
+  const id = req.params.networkId
+  for (const field of ['threshold', 'batch_size']) {
+    if (before[field] !== after[field]) {
+      audit(id, req.user, 'edit', { label: after.label, field, old_value: before[field], new_value: after[field] })
+    }
+  }
+  if ((before.enabled !== 0) !== after.enabled) {
+    audit(id, req.user, after.enabled ? 'enable' : 'disable', { label: after.label })
+  }
+}
+
 app.post('/api/targets/:networkId', browserAuth, (req, res) => {
   const { label } = req.body
   if (!label || typeof label !== 'string' || !label.trim()) {
@@ -142,8 +209,11 @@ app.post('/api/targets/:networkId', browserAuth, (req, res) => {
   }
   const target = parseTarget(req.body)
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
+  const before = getTarget(req.params.networkId, target.label)
   upsertTarget(req.params.networkId, target)
-  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
+  if (before) auditChanges(req, before, target)
+  else audit(req.params.networkId, req.user, 'create', { label: target.label, new_value: target.threshold })
+  broadcastTargets(req.params.networkId)
   res.json({ ok: true })
 })
 
@@ -157,22 +227,88 @@ app.put('/api/targets/:networkId/bulk', browserAuth, (req, res) => {
     parsed.push(t)
   }
   replaceTargets(req.params.networkId, parsed)
-  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
+  audit(req.params.networkId, req.user, 'import', { new_value: parsed.length })
+  broadcastTargets(req.params.networkId)
   res.json({ ok: true })
 })
 
 app.put('/api/targets/:networkId/:label', browserAuth, (req, res) => {
   const target = parseTarget({ ...req.body, label: req.params.label })
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
+  const before = getTarget(req.params.networkId, target.label)
   upsertTarget(req.params.networkId, target)
-  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
+  if (before) auditChanges(req, before, target)
+  broadcastTargets(req.params.networkId)
   res.json({ ok: true })
 })
 
 app.delete('/api/targets/:networkId/:label', browserAuth, (req, res) => {
-  deleteTarget(req.params.networkId, req.params.label)
-  broadcast({ type: 'targets', network_id: req.params.networkId, targets: withIcons(getTargets(req.params.networkId)) })
+  if (getTarget(req.params.networkId, req.params.label)) {
+    deleteTarget(req.params.networkId, req.params.label)
+    audit(req.params.networkId, req.user, 'remove', { label: req.params.label })
+  }
+  broadcastTargets(req.params.networkId)
   res.json({ ok: true })
+})
+
+function labelList(value) {
+  return Array.isArray(value) && value.length <= 5000 && value.every(l => typeof l === 'string') ? value : null
+}
+
+app.get('/api/groups/:networkId', browserAuth, (req, res) => {
+  res.json(getGroups(req.params.networkId))
+})
+
+app.post('/api/groups/:networkId', browserAuth, (req, res) => {
+  const labels = labelList(req.body?.labels)
+  if (!labels || labels.length < 2) return res.status(400).json({ error: 'at least 2 labels required' })
+  createGroup(req.params.networkId, labels)
+  broadcastTargets(req.params.networkId)
+  res.json({ ok: true })
+})
+
+app.put('/api/groups/:networkId/:id', browserAuth, (req, res) => {
+  const name = String(req.body?.name ?? '').trim().slice(0, 64)
+  if (!name) return res.status(400).json({ error: 'name required' })
+  renameGroup(req.params.networkId, Number(req.params.id), name)
+  broadcastTargets(req.params.networkId)
+  res.json({ ok: true })
+})
+
+app.delete('/api/groups/:networkId/:id', browserAuth, (req, res) => {
+  deleteGroup(req.params.networkId, Number(req.params.id))
+  broadcastTargets(req.params.networkId)
+  res.json({ ok: true })
+})
+
+app.post('/api/layout/:networkId/move', browserAuth, (req, res) => {
+  const labels = labelList(req.body?.labels)
+  if (!labels?.length) return res.status(400).json({ error: 'labels required' })
+  const before = typeof req.body.before === 'string' ? req.body.before : null
+  const groupId = Number.isInteger(req.body.group_id) ? req.body.group_id : null
+  moveTargets(req.params.networkId, labels, before, groupId)
+  broadcastTargets(req.params.networkId)
+  res.json({ ok: true })
+})
+
+app.put('/api/layout/:networkId', browserAuth, (req, res) => {
+  const order = labelList(req.body?.order)
+  const groups = req.body?.groups ?? []
+  if (!order || !Array.isArray(groups)) return res.status(400).json({ error: 'order and groups required' })
+  const parsed = []
+  for (const g of groups) {
+    const labels = labelList(g?.labels)
+    if (!labels) return res.status(400).json({ error: 'invalid group' })
+    parsed.push({ name: String(g.name ?? '').trim().slice(0, 64) || `Group ${parsed.length + 1}`, labels })
+  }
+  replaceLayout(req.params.networkId, order, parsed)
+  broadcastTargets(req.params.networkId)
+  res.json({ ok: true })
+})
+
+app.get('/api/audit/:networkId', browserAuth, (req, res) => {
+  const before = Number(req.query.before) || Number.MAX_SAFE_INTEGER
+  res.json(getAudit(req.params.networkId, before, 200))
 })
 
 app.get('/api/stock/:networkId', browserAuth, (req, res) => {
@@ -184,13 +320,16 @@ app.get('/api/settings/:networkId', browserAuth, (req, res) => {
 })
 
 app.put('/api/settings/:networkId', browserAuth, (req, res) => {
-  const sleep = Number(req.body.maintainer_sleep)
+  const sleep = Math.floor(Number(req.body.maintainer_sleep))
   if (!Number.isFinite(sleep) || sleep < 5) return res.status(400).json({ error: 'invalid' })
-  setSettings(req.params.networkId, { maintainer_sleep: Math.floor(sleep) })
+  const old = getSettings(req.params.networkId).maintainer_sleep
+  setSettings(req.params.networkId, { maintainer_sleep: sleep })
+  if (old !== sleep) audit(req.params.networkId, req.user, 'edit', { field: 'check interval', old_value: old, new_value: sleep })
   res.json({ ok: true })
 })
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  if (!sessionUser(req)) return ws.close(4001, 'unauthorized')
   ws.on('error', console.error)
 })
 
