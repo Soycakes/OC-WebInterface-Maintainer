@@ -1,7 +1,11 @@
 {
   "name": "oc-web-interface-maintainer",
   "version": "1.0.0",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
-    "start": "cd client && npm install && npm run build && cd ../server && npm install && node index.js"
+    "build": "cd client && npm install && npm run build && cd ../server && npm install",
+    "start": "cd server && node index.js"
   }
 }

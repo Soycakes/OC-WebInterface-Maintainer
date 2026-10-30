@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 
-const db = new Database(process.env.DATA_DIR ? `${process.env.DATA_DIR}/data.db` : 'data.db')
+const dataDir = process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH
+const db = new Database(dataDir ? `${dataDir}/data.db` : 'data.db')
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS targets (
