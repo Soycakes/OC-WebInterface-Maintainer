@@ -143,6 +143,43 @@ function showToast(message, type = 'success', action = null) {
   }, 5000)
 }
 
+const mcColors = {
+  0: '#000000', 1: '#0000aa', 2: '#00aa00', 3: '#00aaaa', 4: '#aa0000', 5: '#aa00aa', 6: '#ffaa00', 7: '#aaaaaa',
+  8: '#555555', 9: '#5555ff', a: '#55ff55', b: '#55ffff', c: '#ff5555', d: '#ff55ff', e: '#ffff55', f: '#ffffff'
+}
+
+function mcText(text) {
+  return String(text).split('§').map((part, i) => {
+    const color = mcColors[part[0]]
+    if (i === 0 || !color) return esc(i === 0 ? part : '§' + part)
+    return `<span style="color:${color}">${esc(part.slice(1))}</span>`
+  }).join('')
+}
+
+const tooltip = document.createElement('div')
+tooltip.className = 'mc-tooltip'
+tooltip.hidden = true
+document.body.appendChild(tooltip)
+let tipSource = null
+
+document.addEventListener('mouseover', e => {
+  const el = e.target.closest?.('[data-tip]')
+  if (el === tipSource) return
+  tipSource = el
+  if (!el) { tooltip.hidden = true; return }
+  const body = el.dataset.tipBody ? el.dataset.tipBody.split('\n').map(line => `<div class="mc-tooltip-body">${mcText(line)}</div>`).join('') : ''
+  tooltip.innerHTML = `<div class="mc-tooltip-title">${mcText(el.dataset.tip)}</div>${body}`
+  tooltip.hidden = false
+})
+
+document.addEventListener('mousemove', e => {
+  if (tooltip.hidden) return
+  if (!tipSource?.isConnected) { tooltip.hidden = true; tipSource = null; return }
+  const x = Math.min(e.clientX + 14, innerWidth - tooltip.offsetWidth - 4)
+  const y = Math.max(4, Math.min(e.clientY - 18, innerHeight - tooltip.offsetHeight - 4))
+  tooltip.style.transform = `translate(${x}px, ${y}px)`
+})
+
 async function fetchNetworks() {
   const res = await fetch('/api/networks')
   if (res.status === 401) return null
@@ -239,7 +276,7 @@ function renderUserBox() {
   const box = document.getElementById('user-box')
   if (!box) return
   box.innerHTML = `
-    Signed in as <button id="user-name" class="link-btn" title="Click to change your name">${esc(username)}</button>
+    Signed in as <button id="user-name" class="link-btn" data-tip="Click to change your name">${esc(username)}</button>
     <span>·</span>
     <button id="logout-btn" class="link-btn">Log out</button>
   `
@@ -332,7 +369,8 @@ async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
         threshold: old?.threshold ?? null,
         batch_size: old?.batch_size ?? 1,
         is_fluid: newIsFluid,
-        enabled: old?.enabled !== 0
+        enabled: old?.enabled !== 0,
+        emitter: old?.emitter ?? null
       })
     })
     if (!res2.ok) throw new Error()
@@ -364,7 +402,7 @@ function openItemPicker(onSelect) {
 
   function renderResults(items) {
     grid.innerHTML = items.slice(0, 64).map(i => `
-      <div class="picker-item" data-label="${esc(i.label)}" data-fluid="${i.is_fluid}" title="${esc(i.label)}">
+      <div class="picker-item" data-label="${esc(i.label)}" data-fluid="${i.is_fluid}" data-tip="${esc(i.label)}">
         ${iconHtml(i.x, i.y)}
         <span class="picker-item-name">${esc(i.label)}</span>
       </div>
@@ -446,9 +484,11 @@ function updateStatusCounts() {
     const count = stock[t.label]
     return t.threshold === null || (count !== undefined && count >= t.threshold)
   }).length
+  const held = enabled.filter(t => itemStatus.held?.[t.label] && !itemStatus.failed?.[t.label] && !itemStatus.crafting?.[t.label]).length
   el.innerHTML = `
     <span class="count-stocked">${stocked} stocked</span>
     <span class="count-crafting">${crafting} crafting</span>
+    ${held ? `<span class="count-held">${held} held</span>` : ''}
     <span class="count-failed">${failed} failed</span>
     <span class="count-disabled">${disabled} disabled</span>
   `
@@ -463,9 +503,13 @@ function updateStockCells() {
     const cell = row.querySelector('[data-stock]')
     const count = stock[t.label]
     cell.textContent = count === undefined ? '...' : formatCount(count)
-    cell.title = count === undefined ? 'Loading...' : String(count)
+    cell.dataset.tip = count === undefined ? 'Loading...' : count.toLocaleString()
     const keep = ['group-first', 'group-middle', 'group-last', 'group-single', 'row-disabled'].filter(c => row.classList.contains(c))
     row.className = [rowStatusClass(t.label, t), ...keep].filter(Boolean).join(' ')
+    const torch = row.querySelector('.emitter-btn')
+    const tip = emitterTip(t)
+    if (!torch.classList.contains(`emitter-${emitterState(t)}`)) torch.outerHTML = emitterButton(t)
+    else Object.assign(torch.dataset, { tip: tip.title, tipBody: tip.body })
   }
 }
 
@@ -478,6 +522,7 @@ function buildExportBundle() {
       if (t.fluid_tag) out.fluid_tag = t.fluid_tag
       if (t.is_fluid) out.is_fluid = true
       if (t.enabled === 0) out.enabled = false
+      if (t.emitter) out.emitter = t.emitter
       return out
     }),
     groups: loadGroups().map(g => ({ name: g.name, labels: g.labels })),
@@ -625,21 +670,97 @@ function timeAgo(at) {
 
 let registryIcons = null
 
-function auditItem(label) {
+function registryEntry(label) {
   registryIcons ??= new Map(registry.map(r => [r.label, r]))
-  const reg = registryIcons.get(label)
+  return registryIcons.get(label)
+}
+
+function auditItem(label) {
+  const reg = registryEntry(label)
   return `<span class="history-item">${iconHtml(reg?.x, reg?.y)}${esc(label)}</span>`
 }
 
+const amountText = v => v === null ? 'infinite' : formatShort(v)
+
+function amountChange(name, before, after) {
+  const asNumber = v => v === null ? Infinity : Number(v)
+  const trend = asNumber(after) > asNumber(before) ? 'audit-added' : 'audit-removed'
+  return `${esc(name)} ${amountText(before)} → <span class="${trend}">${amountText(after)}</span>`
+}
+
+function logicHtml(mode) {
+  return `<span class="logic-${mode}">${mode.toUpperCase()}</span>`
+}
+
+function emitterChanges(before, after) {
+  const rule = r => `${esc(r.label)} ${r.below ? 'below' : 'above'} ${formatShort(r.amount)}`
+  if (!before) return [`<span class="audit-added">set up emitter</span> ${logicHtml(after.mode)}: ${after.rules.map(rule).join(', ')}`]
+  if (!after) return ['<span class="audit-removed">removed emitter</span>']
+  const parts = []
+  if (before.mode !== after.mode) parts.push(`logic ${logicHtml(before.mode)} → ${logicHtml(after.mode)}`)
+  const old = new Map(before.rules.map(r => [r.label, r]))
+  for (const r of after.rules) {
+    const prev = old.get(r.label)
+    old.delete(r.label)
+    if (!prev) {
+      parts.push(`<span class="audit-added">added</span> ${rule(r)}`)
+      continue
+    }
+    if (prev.amount !== r.amount) parts.push(amountChange(r.label, prev.amount, r.amount))
+    if (prev.below !== r.below) parts.push(`${esc(r.label)} now ${r.below ? 'below' : 'above'}`)
+  }
+  for (const r of old.values()) parts.push(`<span class="audit-removed">removed</span> ${esc(r.label)}`)
+  return parts
+}
+
+function describeChange(e) {
+  const before = JSON.parse(e.old_value)
+  const after = JSON.parse(e.new_value)
+  if (!before) return `<span class="audit-added">added</span> ${auditItem(e.label)}`
+  if (!after) return `<span class="audit-removed">removed</span> ${auditItem(e.label)}`
+  const parts = []
+  if (before.enabled !== after.enabled) parts.push(after.enabled ? '<span class="audit-added">enabled</span>' : '<span class="audit-removed">disabled</span>')
+  if (before.threshold !== after.threshold) parts.push(amountChange('threshold', before.threshold, after.threshold))
+  if (before.batch_size !== after.batch_size) parts.push(amountChange('batch size', before.batch_size, after.batch_size))
+  if (JSON.stringify(before.emitter) !== JSON.stringify(after.emitter)) parts.push(...emitterChanges(before.emitter, after.emitter))
+  return `<span class="audit-changed">changed</span> ${auditItem(e.label)} ${parts.join(' <span class="audit-sep">·</span> ')}`
+}
+
+function stateLines(state) {
+  if (!state) return ['§8not in the list']
+  const lines = [
+    `§fThreshold: §e${amountText(state.threshold)}`,
+    `§fBatch size: §e${formatShort(state.batch_size)}`,
+    `§fStatus: ${state.enabled ? '§aEnabled' : '§cDisabled'}`
+  ]
+  if (state.emitter) lines.push(`§fEmitter: ${logicText(state.emitter.mode)}`, ...state.emitter.rules.map(ruleText))
+  return lines
+}
+
+function auditTip(e) {
+  if (e.action !== 'change') return ''
+  const body = ['§7Before:', ...stateLines(JSON.parse(e.old_value)), '', '§7After:', ...stateLines(JSON.parse(e.new_value))]
+  return ` data-tip="${esc(e.label)}" data-tip-body="${esc(body.join('\n'))}"`
+}
+
 function describeAudit(e) {
-  const amount = v => v === null ? 'infinite' : formatShort(v)
+  const amount = amountText
+  if (e.action === 'change') return describeChange(e)
   const field = e.field === 'batch_size' ? 'batch size' : e.field
   if (e.action === 'import') return `imported ${esc(e.new_value)} targets`
   if (e.action === 'create') return `<span class="audit-added">added</span> ${auditItem(e.label)}`
   if (e.action === 'remove') return `<span class="audit-removed">removed</span> ${auditItem(e.label)}`
-  if (e.action === 'enable' || e.action === 'disable') return `${e.action}d ${auditItem(e.label)}`
+  if (e.action === 'enable') return `enabled ${auditItem(e.label)}`
+  if (e.action === 'disable') return `<span class="audit-removed">disabled</span> ${auditItem(e.label)}`
+  if (e.action === 'emitter') {
+    return e.new_value
+      ? `<span class="audit-changed">set emitter</span> on ${auditItem(e.label)} ${esc(e.new_value)}`
+      : `<span class="audit-removed">removed emitter</span> from ${auditItem(e.label)}`
+  }
   const subject = e.label ? `${auditItem(e.label)} ${esc(field)}` : esc(field)
-  return `changed ${subject} ${amount(e.old_value)} → ${amount(e.new_value)}`
+  const asNumber = v => v === null ? Infinity : Number(v)
+  const trend = asNumber(e.new_value) > asNumber(e.old_value) ? 'audit-added' : 'audit-removed'
+  return `<span class="audit-changed">changed</span> ${subject} ${amount(e.old_value)} → <span class="${trend}">${amount(e.new_value)}</span>`
 }
 
 function openHistoryModal() {
@@ -666,9 +787,9 @@ function openHistoryModal() {
     const shown = entries.filter(e => matchesTokens(`${e.user} ${e.label ?? ''} ${e.field ?? ''} ${e.action}`, tokens))
     list.innerHTML = shown.map(e => `
       <div class="history-row">
-        <span class="history-time" title="${esc(new Date(e.at).toLocaleString())}">${timeAgo(e.at)}</span>
+        <span class="history-time" data-tip="${esc(new Date(e.at).toLocaleString())}">${timeAgo(e.at)}</span>
         <span class="history-user">${esc(e.user)}</span>
-        <span class="history-text">${describeAudit(e)}</span>
+        <span class="history-text"${auditTip(e)}>${describeAudit(e)}</span>
       </div>
     `).join('') || '<p class="history-empty">No changes recorded yet.</p>'
   }
@@ -693,6 +814,150 @@ function openHistoryModal() {
   overlay.onclick = e => { if (e.target === overlay) overlay.remove() }
   filter.focus()
   loadPage()
+}
+
+const MAX_EMITTER_RULES = 10
+
+function emitterState(t) {
+  if (!t.emitter) return 'none'
+  return itemStatus.emitter?.[t.label] ? 'on' : 'off'
+}
+
+const logicText = mode => mode === 'or' ? '§eOR' : '§9AND'
+
+function ruleMet(r) {
+  const count = stock[r.label]
+  return count !== undefined && (r.below ? count < r.amount : count >= r.amount)
+}
+
+function stockText(r) {
+  const count = stock[r.label]
+  return count === undefined ? '§7...' : `${ruleMet(r) ? '§a' : '§c'}${formatShort(count)}`
+}
+
+function ruleText(r) {
+  return `§f${r.label} §7${r.below ? 'below' : 'above'} §e${formatShort(r.amount)}`
+}
+
+function ruleLine(r) {
+  return `${ruleText(r)} §7(have ${stockText(r)}§7)`
+}
+
+function emitterTip(t) {
+  const state = emitterState(t)
+  const title = { none: 'Emitter: §8not set', off: 'Emitter: §cnot met', on: 'Emitter: §amet' }[state]
+  const body = t.emitter
+    ? [`§fLogic: ${logicText(t.emitter.mode)}`, ...t.emitter.rules.map(ruleLine)]
+    : ['Click to only craft when other items are low or high']
+  return { title, body: body.join('\n') }
+}
+
+function emitterButton(t) {
+  const state = emitterState(t)
+  const tip = emitterTip(t)
+  return `
+    <button class="emitter-btn emitter-${state}" data-emitter="${esc(t.label)}" data-tip="${esc(tip.title)}" data-tip-body="${esc(tip.body)}">
+      <img src="/icons/torch_${state === 'on' ? 'on' : 'off'}.png" alt="">
+    </button>
+  `
+}
+
+function openEmitterModal(label) {
+  const target = targets.find(t => t.label === label)
+  if (!target) return
+  let mode = target.emitter?.mode ?? 'and'
+  const rules = structuredClone(target.emitter?.rules ?? [])
+  const overlay = document.createElement('div')
+  overlay.className = 'picker-overlay'
+  document.body.appendChild(overlay)
+
+  function save() {
+    send('PUT', `/api/targets/${networkId}/${encodeURIComponent(label)}/emitter`, { mode, rules })
+      .catch(() => showToast(msg.saveFailed, 'error'))
+  }
+
+  function pickInto(index) {
+    openItemPicker(({ label: picked, is_fluid }) => {
+      if (index === rules.length) rules.push({ label: picked, is_fluid, amount: 0, below: false })
+      else Object.assign(rules[index], { label: picked, is_fluid })
+      save()
+      draw()
+      overlay.querySelector(`[data-amount="${index}"]`)?.focus()
+    })
+  }
+
+  function draw() {
+    const self = registryEntry(label)
+    const rows = rules.map((r, i) => {
+      const reg = registryEntry(r.label)
+      const count = stock[r.label]
+      return `
+        <div class="emitter-row">
+          <div class="mc-slot" data-pick="${i}" data-tip="${esc(r.label)}" data-tip-body="Click to change">${iconHtml(reg?.x, reg?.y)}</div>
+          <span class="emitter-name" data-pick="${i}">${esc(r.label)}</span>
+          <span class="${ruleMet(r) ? 'audit-added' : 'audit-removed'}" data-tip="${count === undefined ? 'Loading...' : count.toLocaleString()}">${count === undefined ? '...' : formatShort(count)}</span>
+          <input type="text" data-amount="${i}" value="${formatShort(r.amount)}">
+          <button class="emitter-icon-btn" data-flip="${i}"
+            data-tip="${r.below ? 'Below limit' : 'Above limit'}"
+            data-tip-body="${r.below ? 'Met when stock is below the amount' : 'Met when stock is at or above the amount'}">
+            <img src="/icons/torch_${r.below ? 'off' : 'on'}.png" alt="">
+          </button>
+          <button class="emitter-remove" data-remove="${i}" data-tip="Remove">X</button>
+        </div>
+      `
+    }).join('')
+    overlay.innerHTML = `
+      <div class="emitter-modal">
+        <div class="emitter-header">
+          <button class="emitter-icon-btn" data-logic data-tip="Logic Mode"
+            data-tip-body="${mode === 'and' ? '§9AND§7 - Craft when all conditions match' : '§eOR§7 - Craft when any condition matches'}">
+            <img src="/icons/logic_${mode}.png" alt="">
+          </button>
+          <span class="emitter-title">Advanced Emitter</span>
+          <button id="picker-close">X</button>
+        </div>
+        <div class="emitter-target">${iconHtml(self?.x, self?.y)}<span>Only craft <b>${esc(label)}</b> when:</span></div>
+        <div class="emitter-rows">
+          ${rules.length ? '<div class="emitter-row emitter-head"><span>Item</span><span>Stock</span><span>Threshold</span></div>' : ''}
+          ${rows}
+        </div>
+        ${rules.length < MAX_EMITTER_RULES ? `<div class="item-slot item-slot-empty emitter-add" data-pick="${rules.length}">Click to add item</div>` : ''}
+      </div>
+    `
+  }
+
+  overlay.addEventListener('click', e => {
+    if (e.target === overlay || e.target.id === 'picker-close') return overlay.remove()
+    const el = e.target.closest('[data-pick], [data-flip], [data-remove], [data-logic]')
+    if (!el) return
+    if ('pick' in el.dataset) return pickInto(Number(el.dataset.pick))
+    if ('logic' in el.dataset) mode = mode === 'and' ? 'or' : 'and'
+    if ('flip' in el.dataset) rules[el.dataset.flip].below = !rules[el.dataset.flip].below
+    if ('remove' in el.dataset) rules.splice(Number(el.dataset.remove), 1)
+    save()
+    draw()
+  })
+
+  overlay.addEventListener('change', e => {
+    const input = e.target.closest('[data-amount]')
+    if (!input) return
+    const rule = rules[input.dataset.amount]
+    const parsed = parseAmount(input.value)
+    if (parsed === null || parsed < 0) {
+      showToast('Invalid format', 'error')
+      input.value = formatShort(rule.amount)
+      return
+    }
+    rule.amount = clampAmount(parsed)
+    input.value = formatShort(rule.amount)
+    save()
+  })
+
+  overlay.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.target.matches('input')) e.target.blur()
+  })
+
+  draw()
 }
 
 function render() {
@@ -799,6 +1064,7 @@ function rowStatusClass(label, target) {
   if (s.failed?.[label]) return 'status-error'
   if (s.crafting?.[label]) return 'status-crafting'
   if (s.requested?.[label]) return 'status-ok'
+  if (s.held?.[label]) return 'status-held'
   if (stock[label] !== undefined && target.threshold !== null && stock[label] >= target.threshold) return 'status-ok'
   return ''
 }
@@ -855,8 +1121,8 @@ function renderCollapsedGroupRow(group) {
   const extra = members.length > 5 ? `<span class="group-extra-count">+${members.length - 5}</span>` : ''
   const allEnabled = members.every(t => t.enabled !== 0)
   return `
-    <tr class="group-collapsed-row" data-group-id="${group.id}">
-      <td class="bracket-cell bracket-collapse-zone" data-group-id="${group.id}" title="${esc(group.name)}"></td>
+    <tr class="group-collapsed-row group-single" data-group-id="${group.id}">
+      <td class="bracket-cell bracket-collapse-zone" data-group-id="${group.id}" data-tip="${esc(group.name)}" data-tip-body="Click to expand"></td>
       <td>
         <div class="grab-handle">
           <span></span><span></span>
@@ -870,6 +1136,7 @@ function renderCollapsedGroupRow(group) {
         </button>
       </td>
       <td><div class="group-icons">${icons}${extra}</div></td>
+      <td></td>
       <td></td>
       <td colspan="2"><input type="text" class="group-name-input" data-group-id="${group.id}" value="${esc(group.name)}"></td>
       <td><button class="expand-btn" data-group-id="${group.id}">Expand</button></td>
@@ -1004,10 +1271,11 @@ function setupBracketDrag(container) {
 
 function setupTableEvents(container) {
   container.addEventListener('click', async (e) => {
-    const el = e.target.closest('[data-delete], [data-toggle], [data-change], .group-toggle-btn, .expand-btn')
+    const el = e.target.closest('[data-delete], [data-toggle], [data-change], [data-emitter], .group-toggle-btn, .expand-btn')
     if (!el) return
 
     if ('delete' in el.dataset) return removeTarget(el.dataset.delete)
+    if ('emitter' in el.dataset) return openEmitterModal(el.dataset.emitter)
 
     if ('toggle' in el.dataset) {
       const label = el.dataset.toggle
@@ -1108,7 +1376,7 @@ function renderTable() {
     const t = entry.target
     const count = stock[t.label]
     const stockDisplay = count === undefined ? '...' : formatCount(count)
-    const stockTitle = count === undefined ? 'Loading...' : String(count)
+    const stockTitle = count === undefined ? 'Loading...' : count.toLocaleString()
     const thresholdVal = formatShort(t.threshold)
     const batchVal = formatShort(t.batch_size ?? 1)
     const enabled = t.enabled !== 0
@@ -1118,7 +1386,7 @@ function renderTable() {
     const label = esc(t.label)
     return `
       <tr data-row="${label}" class="${rowClass}">
-        <td class="bracket-cell" data-row="${label}"${entry.group ? ` title="${esc(entry.group.name)}"` : ''}></td>
+        <td class="bracket-cell" data-row="${label}"${entry.group ? ` data-tip="${esc(entry.group.name)}"` : ''}></td>
         <td>
           <div class="grab-handle">
             <span></span><span></span>
@@ -1137,7 +1405,8 @@ function renderTable() {
             <span>${label}</span>
           </div>
         </td>
-        <td data-stock title="${stockTitle}">${stockDisplay}</td>
+        <td data-stock data-tip="${stockTitle}">${stockDisplay}</td>
+        <td>${emitterButton(t)}</td>
         <td>
           <input type="text" value="${thresholdVal}" placeholder="infinite"
             data-label="${label}" data-field="threshold">
@@ -1162,6 +1431,7 @@ function renderTable() {
           <th></th>
           <th>Item</th>
           <th>Stock</th>
+          <th></th>
           <th>Threshold</th>
           <th>Batch size</th>
           <th></th>

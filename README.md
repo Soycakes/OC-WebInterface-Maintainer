@@ -30,7 +30,7 @@ OC that runs the logic to actually maintain and send ae2 request
 
 To install, run
 ```
-wget raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/install-maintainer.lua && install-maintainer
+wget https://raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/install-maintainer.lua && install-maintainer
 ```
 then run `Maintainer` to run the program
 
@@ -42,7 +42,7 @@ OC that connects Maintainer to web app transferring needed data between
 
 To install, run
 ```
-wget raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/install-connector.lua && install-connector
+wget https://raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/install-connector.lua && install-connector
 ```
 then run `Connector` to run the program
 

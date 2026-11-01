@@ -15,10 +15,14 @@ body, input, button, select, textarea {
   font-family: 'Minecraft', sans-serif;
 }
 
+:root {
+  color-scheme: dark;
+  scrollbar-color: #555 #1a1a1a;
+}
+
 body {
   background: #0f0f0f;
   color: #e0e0e0;
-  overflow: hidden;
 }
 
 #app {
@@ -26,16 +30,13 @@ body {
   width: 100%;
   margin: 0 auto;
   padding: 1.5rem 2rem 1.5rem;
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
 }
 
 #main-content {
   flex: 1;
-  overflow-y: auto;
-  min-height: 0;
 }
 
 input[type="number"],
@@ -254,8 +255,9 @@ button:disabled {
 tr.status-ok { background: rgba(60, 140, 80, 0.35); }
 tr.status-crafting { background: rgba(60, 110, 200, 0.35); }
 tr.status-error { background: rgba(180, 50, 50, 0.4); }
+tr.status-held { background: rgba(255, 170, 0, 0.28); }
 
-tr.row-disabled td:not(:nth-child(1)):not(:nth-child(2)):not(:nth-child(8)) {
+tr.row-disabled td:not(:nth-child(1)):not(:nth-child(2)):not(:last-child) {
   opacity: 0.65;
 }
 
@@ -398,17 +400,23 @@ table th:nth-child(5), table td:nth-child(5) {
   width: 100px;
 }
 table th:nth-child(6), table td:nth-child(6) {
-  width: 180px;
+  width: 44px;
+  padding: 2px;
+  text-align: center;
 }
 table th:nth-child(7), table td:nth-child(7) {
-  width: 180px;
+  width: 160px;
 }
 table th:nth-child(8), table td:nth-child(8) {
+  width: 160px;
+}
+table th:nth-child(9), table td:nth-child(9) {
   width: 104px;
 }
 
-table td:nth-child(8) button {
+table td:last-child button {
   width: 100%;
+  height: 32px;
   min-width: 0;
   padding-left: 4px;
   padding-right: 4px;
@@ -497,6 +505,14 @@ tr.group-collapsed-row:hover {
 
 .bracket-collapse-zone {
   cursor: pointer;
+}
+tr.group-collapsed-row .bracket-collapse-zone:hover::before,
+tr.group-collapsed-row .bracket-collapse-zone:hover::after {
+  background-color: #ddd;
+  border-color: #ddd;
+}
+tr.group-collapsed-row .bracket-collapse-zone:hover::after {
+  background-color: transparent;
 }
 
 .group-name-input {
@@ -608,6 +624,7 @@ tr.group-collapsed-row:hover {
 
 .count-stocked { color: #55ff55; }
 .count-crafting { color: #6699ff; }
+.count-held { color: #ffaa00; }
 .count-failed { color: #ff5555; }
 .count-disabled { color: #999; }
 
@@ -655,6 +672,9 @@ tr.dragging {
 
 /* MC inventory add panel */
 .mc-inventory-panel {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
   flex-shrink: 0;
   background: #2c2c2c;
   box-shadow: inset 2px 2px 0 #8a8a8a, inset -2px -2px 0 #111;
@@ -758,8 +778,33 @@ tr.dragging {
 
 .history-time {
   color: #888;
-  cursor: help;
   white-space: nowrap;
+  cursor: default;
+}
+
+.mc-tooltip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 2000;
+  max-width: 420px;
+  padding: 6px 8px 4px;
+  background: #100010;
+  border: 2px solid;
+  border-image: linear-gradient(#5000ff50, #28007f50) 1;
+  box-shadow: 0 -2px 0 #100010, 0 2px 0 #100010, -2px 0 0 #100010, 2px 0 0 #100010;
+  pointer-events: none;
+  line-height: 1.35;
+}
+
+.mc-tooltip-title {
+  color: #fff;
+  text-shadow: 2px 2px 0 #3f3f3f;
+}
+
+.mc-tooltip-body {
+  color: #aaa;
+  text-shadow: 2px 2px 0 #2a2a2a;
 }
 
 .history-text {
@@ -777,6 +822,10 @@ tr.dragging {
 
 .audit-added { color: #55ff55; }
 .audit-removed { color: #ff5555; }
+.audit-changed { color: #ffdd55; }
+.audit-sep { color: #666; }
+.logic-and { color: #5555ff; }
+.logic-or { color: #ffff55; }
 
 .history-user {
   color: #6699ff;
@@ -797,4 +846,155 @@ tr.dragging {
 
 .history-footer:has(button[hidden]) {
   display: none;
+}
+
+.emitter-btn {
+  min-width: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+.emitter-btn img {
+  margin: -2px;
+}
+
+.emitter-icon-btn {
+  min-width: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.emitter-btn img,
+.emitter-icon-btn img {
+  width: 32px;
+  height: 32px;
+  image-rendering: pixelated;
+}
+
+.emitter-none {
+  background: #262626;
+  border-color: #3a3a3a #141414 #141414 #3a3a3a;
+  opacity: 0.55;
+}
+
+.emitter-none:hover:not(:disabled) {
+  background: #3a3a3a;
+  opacity: 1;
+}
+
+.emitter-none img {
+  filter: grayscale(1) brightness(0.7);
+}
+
+.emitter-modal {
+  background: #2c2c2c;
+  box-shadow: inset 2px 2px 0 #8a8a8a, inset -2px -2px 0 #111;
+  border: 2px solid #000;
+  width: min(680px, 95vw);
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 12px 16px 16px;
+}
+
+.emitter-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.emitter-title {
+  flex: 1;
+  color: #fff;
+  text-shadow: 1px 1px 0 #000;
+}
+
+.emitter-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #aaa;
+  margin-bottom: 10px;
+}
+
+.emitter-target b {
+  color: #fff;
+  font-weight: normal;
+}
+
+.emitter-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.emitter-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 72px 150px 36px 36px;
+  align-items: center;
+  gap: 8px;
+}
+
+.emitter-row input {
+  width: 100%;
+  height: 36px;
+}
+
+.emitter-head {
+  color: #aaa;
+  font-size: 0.9em;
+}
+
+.emitter-head span:first-child {
+  grid-column: span 2;
+}
+
+.emitter-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.emitter-add {
+  margin-top: 8px;
+}
+
+.mc-slot {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: #1a1a1a;
+  border: 2px solid;
+  border-color: #0a0a0a #555 #555 #0a0a0a;
+  cursor: pointer;
+}
+
+.mc-slot:hover {
+  background: #333;
+}
+
+.emitter-remove {
+  min-width: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: #5a2a2a;
+  border-color: #a05555 #3a1a1a #3a1a1a #a05555;
+}
+
+.emitter-remove:hover:not(:disabled) {
+  background: #7a3a3a;
+}
+
+.mc-tooltip-body:empty {
+  height: 0.6em;
 }

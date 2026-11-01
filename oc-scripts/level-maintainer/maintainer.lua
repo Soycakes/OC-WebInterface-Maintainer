@@ -13,7 +13,7 @@ local currentSleep = cfg.sleep or 5
 local debugEnabled = cfg.debug == true
 
 if fluids and next(fluids) and not ae2.hasFluidSupport() then
-  print("WARNING: fluids configured but ME interface does not support getFluidInNetwork (needs GTNH 2.9+). Fluids skipped.")
+  print("WARNING: fluids configured but ME interface does not support getFluidsInNetwork (needs GTNH 2.9+). Fluids skipped.")
   fluids = {}
 end
 
@@ -62,6 +62,9 @@ local function drawScreen(active, requested, failed, queryTime, qCount)
   for label, batch in pairs(requested) do
     line("  requested " .. label .. " x " .. batch, 0x55FF55)
   end
+  for label in pairs(lastCycleStatus.held or {}) do
+    line("  held " .. label, 0xFFAA00)
+  end
   for _, msg in pairs(failed) do
     line("  " .. msg, 0xFF2020)
   end
@@ -81,14 +84,42 @@ end
 
 
 local function stock()
-  local counts = {}
-  for label, config in pairs(items) do
-    counts[label] = ae2.getCount(label)
+  local itemCounts = ae2.getItemCounts()
+  local fluidCounts
+  local function fluidCount(label)
+    fluidCounts = fluidCounts or ae2.getFluidCounts()
+    return fluidCounts[label] or 0
   end
-  for label, config in pairs(fluids) do
-    counts[label] = ae2.getFluidCount(label, config[3])
+  local counts = {}
+  for label in pairs(items) do
+    counts[label] = itemCounts[label] or 0
+  end
+  for label in pairs(fluids) do
+    counts[label] = fluidCount(label)
+  end
+  for _, list in ipairs({ items, fluids }) do
+    for _, config in pairs(list) do
+      for _, rule in ipairs(config[4] and config[4].rules or {}) do
+        if counts[rule.label] == nil then
+          counts[rule.label] = rule.is_fluid and fluidCount(rule.label) or itemCounts[rule.label] or 0
+        end
+      end
+    end
   end
   return counts
+end
+
+local function emitterOn(emitter, counts)
+  local any, all = false, true
+  for _, rule in ipairs(emitter.rules) do
+    local count = counts[rule.label] or 0
+    local met
+    if rule.below then met = count < rule.amount else met = count >= rule.amount end
+    any = any or met
+    all = all and met
+  end
+  if emitter.mode == "or" then return any end
+  return all
 end
 
 local function handleModem(_, _, _, _, _, msg)
@@ -110,12 +141,12 @@ if msg:sub(1, 8) == "setsleep" then
   fluids = {}
   for _, t in ipairs(data.targets) do
     if t.is_fluid == 1 then
-      fluids[t.label] = { t.threshold, t.batch_size, t.fluid_tag }
+      fluids[t.label] = { t.threshold, t.batch_size, t.fluid_tag, t.emitter }
     else
-      items[t.label] = { t.threshold, t.batch_size, t.fluid_tag }
+      items[t.label] = { t.threshold, t.batch_size, t.fluid_tag, t.emitter }
     end
   end
-  ae2.clearCache()
+  ae2.forgetMissing()
   log("targets updated from web")
 end
 
@@ -132,10 +163,23 @@ local function mainLoop()
     local active = ae2.crafting()
     local cycleRequested = {}
     local cycleFailed = {}
+    local cycleHeld = {}
+    local emitterStates = {}
+    for _, list in ipairs({ items, fluids }) do
+      for label, config in pairs(list) do
+        if config[4] then emitterStates[label] = emitterOn(config[4], cachedStock) end
+      end
+    end
+    local function held(label, config)
+      if emitterStates[label] ~= false then return false end
+      if config[1] ~= nil and (cachedStock[label] or 0) >= config[1] then return false end
+      cycleHeld[label] = true
+      return true
+    end
 
     for label, config in pairs(items) do
-      if not active[label] then
-        local ok, msg = ae2.requestItem(label, config[1], config[2], cachedStock[label])
+      if not active[label] and not held(label, config) then
+        local ok, msg = ae2.request(label, config[1], config[2], cachedStock[label], "")
         if ok then
           cycleRequested[label] = config[2] or 1
           ae2.clearCraftingCache()
@@ -146,8 +190,8 @@ local function mainLoop()
     end
 
     for label, config in pairs(fluids) do
-      if not active[label] then
-        local ok, msg = ae2.requestFluid(label, config[1], config[2], config[3], cachedStock[label])
+      if not active[label] and not held(label, config) then
+        local ok, msg = ae2.request(label, config[1], config[2], cachedStock[label], " mB")
         if ok then
           cycleRequested[label] = config[2] or 1
           ae2.clearCraftingCache()
@@ -161,7 +205,7 @@ local function mainLoop()
     for label, count in pairs(active) do
       if items[label] or fluids[label] then managedActive[label] = count end
     end
-    lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed }
+    lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed, held = cycleHeld, emitter = emitterStates }
     serializedStockCache = serialization.serialize({ stock = cachedStock, status = lastCycleStatus })
     local queryTime = debugEnabled and (computer.uptime() - startTime) or nil
     local qCount = debugEnabled and ae2.getQueryCount() or nil

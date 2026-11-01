@@ -4,8 +4,7 @@ local ME = component.me_interface
 
 local ae2 = {}
 
-local itemCache = {}
-local fluidNameCache = {}
+local craftableCache = {}
 local cacheTime = 0
 local CACHE_TTL = 600
 
@@ -26,121 +25,60 @@ end
 local function getCraftable(name)
   local now = computer.uptime()
   if now - cacheTime >= CACHE_TTL then
-    itemCache = {}
-    fluidNameCache = {}
+    craftableCache = {}
     cacheTime = now
   end
-  local cached = itemCache[name]
-  if cached ~= nil then
-    return cached ~= false and cached or nil
+  local cached = craftableCache[name]
+  if cached == nil then
+    queryCount = queryCount + 1
+    cached = ME.getCraftables({ ["label"] = name })[1] or false
+    craftableCache[name] = cached
   end
+  return cached or nil
+end
+
+function ae2.forgetMissing()
+  for name, cached in pairs(craftableCache) do
+    if not cached then craftableCache[name] = nil end
+  end
+end
+
+function ae2.getItemCounts()
   queryCount = queryCount + 1
-  local results = ME.getCraftables({ ["label"] = name })
-  if #results >= 1 then
-    local obj = results[1]
-    queryCount = queryCount + 1
-    local stack = (obj.getStack or obj.getItemStack)(obj)
-    itemCache[name] = { obj = obj, stack = stack }
-    return itemCache[name]
+  local counts, craftable = {}, {}
+  for _, item in ipairs(ME.getItemsInNetwork()) do
+    local label = item.label
+    if label and (counts[label] == nil or item.isCraftable and not craftable[label]) then
+      counts[label] = item.size or 0
+      craftable[label] = item.isCraftable
+    end
   end
-  itemCache[name] = false
-  return nil
+  return counts
 end
 
-local function itemCount(entry)
-  local item = entry.stack
-  if not item or not item.name then return 0 end
-  local found
-  if item.tag then
-    queryCount = queryCount + 1
-    found = ME.getItemInNetwork(item.name, item.damage or 0, item.tag)
+function ae2.getFluidCounts()
+  local counts = {}
+  if not ME.getFluidsInNetwork then return counts end
+  queryCount = queryCount + 1
+  for _, fluid in ipairs(ME.getFluidsInNetwork()) do
+    if fluid.label then counts[fluid.label] = (counts[fluid.label] or 0) + (fluid.amount or fluid.size or 0) end
   end
-  if not found then
-    queryCount = queryCount + 1
-    found = ME.getItemInNetwork(item.name, item.damage or 0)
-  end
-  return found and found.size or 0
+  return counts
 end
 
-function ae2.getCount(name)
-  local entry = getCraftable(name)
-  if not entry then return 0 end
-  return itemCount(entry)
-end
-
-function ae2.requestItem(name, threshold, batch, currentCount)
-  local entry = getCraftable(name)
-  if not entry then
+function ae2.request(name, threshold, batch, count, unit)
+  if threshold ~= nil and count >= threshold then return end
+  local craftable = getCraftable(name)
+  if not craftable then
     return false, name .. " is not craftable"
   end
-  if threshold ~= nil then
-    local count = currentCount or itemCount(entry)
-    if count >= threshold then return end
-  end
-  local item = entry.stack
-  if not item or item.label ~= name then
-    return false, name .. " label mismatch or stack could not be resolved"
-  end
   queryCount = queryCount + 1
-  local craft = entry.obj.request(batch)
+  local craft = craftable.request(batch)
   while craft.isComputing() do os.sleep(1) end
   if craft.hasFailed() then
-    return false, "failed to request " .. name .. " x " .. batch
+    return false, "failed to request " .. name .. " x " .. batch .. unit
   end
-  return true, "requested " .. name .. " x " .. batch
-end
-
-function ae2.requestFluid(name, threshold, batch, fluidName, currentCount)
-  local entry = getCraftable(name)
-  if not entry then
-    return false, name .. " is not craftable"
-  end
-  if threshold ~= nil then
-    local amount
-    if currentCount then
-      amount = currentCount
-    else
-      if not fluidName then
-        local cached = fluidNameCache[name]
-        if cached == nil then
-          cached = (entry.stack and entry.stack.name) or false
-          fluidNameCache[name] = cached
-        end
-        if cached then fluidName = cached end
-      end
-      if fluidName then
-        queryCount = queryCount + 1
-        local fluid = ME.getFluidInNetwork(fluidName)
-        amount = fluid and (fluid.size or fluid.amount) or 0
-      else
-        amount = 0
-      end
-    end
-    if amount >= threshold then return end
-  end
-  queryCount = queryCount + 1
-  local craft = entry.obj.request(batch)
-  while craft.isComputing() do os.sleep(1) end
-  if craft.hasFailed() then
-    return false, "failed to request " .. name .. " x " .. batch .. " mB"
-  end
-  return true, "requested " .. name .. " x " .. batch .. " mB"
-end
-
-function ae2.getFluidCount(name, fluidName)
-  if not fluidName then
-    local cached = fluidNameCache[name]
-    if cached == nil then
-      local entry = getCraftable(name)
-      cached = (entry and entry.stack and entry.stack.name) or false
-      fluidNameCache[name] = cached
-    end
-    if cached then fluidName = cached end
-  end
-  if not fluidName then return 0 end
-  queryCount = queryCount + 1
-  local fluid = ME.getFluidInNetwork(fluidName)
-  return fluid and (fluid.size or fluid.amount) or 0
+  return true, "requested " .. name .. " x " .. batch .. unit
 end
 
 function ae2.crafting()
@@ -150,9 +88,11 @@ function ae2.crafting()
     local cpus = ME.getCpus()
     local active = {}
     for _, v in pairs(cpus) do
-      queryCount = queryCount + 1
-      local output = v.cpu.finalOutput()
-      if output then active[output.label] = output.size or 1 end
+      if v.busy then
+        queryCount = queryCount + 1
+        local output = v.cpu.finalOutput()
+        if output then active[output.label] = output.size or 1 end
+      end
     end
     craftingCache = active
     craftingCacheTime = now
@@ -168,14 +108,7 @@ function ae2.clearCraftingCache()
 end
 
 function ae2.hasFluidSupport()
-  return ME.getFluidInNetwork ~= nil
-end
-
-function ae2.clearCache()
-  itemCache = {}
-  fluidNameCache = {}
-  cacheTime = 0
-  ae2.clearCraftingCache()
+  return ME.getFluidsInNetwork ~= nil
 end
 
 return ae2

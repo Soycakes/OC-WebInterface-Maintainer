@@ -50,6 +50,7 @@ db.exec(`
 try { db.exec(`ALTER TABLE targets ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`) } catch {}
 try { db.exec(`ALTER TABLE targets ADD COLUMN position INTEGER NOT NULL DEFAULT 0`) } catch {}
 try { db.exec(`ALTER TABLE targets ADD COLUMN group_id INTEGER`) } catch {}
+try { db.exec(`ALTER TABLE targets ADD COLUMN emitter TEXT`) } catch {}
 
 const AUDIT_CAP = 30000
 
@@ -58,8 +59,8 @@ const q = {
   getTarget: db.prepare('SELECT * FROM targets WHERE network_id = ? AND label = ?'),
   deleteAllTargets: db.prepare('DELETE FROM targets WHERE network_id = ?'),
   upsertTarget: db.prepare(`
-    INSERT INTO targets (network_id, label, threshold, batch_size, fluid_tag, is_fluid, enabled, position)
-    VALUES (@network_id, @label, @threshold, @batch_size, @fluid_tag, @is_fluid, @enabled,
+    INSERT INTO targets (network_id, label, threshold, batch_size, fluid_tag, is_fluid, enabled, emitter, position)
+    VALUES (@network_id, @label, @threshold, @batch_size, @fluid_tag, @is_fluid, @enabled, @emitter,
       (SELECT COALESCE(MAX(position), 0) + 1 FROM targets WHERE network_id = @network_id))
     ON CONFLICT(network_id, label) DO UPDATE SET
       threshold = excluded.threshold,
@@ -69,6 +70,7 @@ const q = {
       enabled = excluded.enabled
   `),
   deleteTarget: db.prepare('DELETE FROM targets WHERE network_id = ? AND label = ?'),
+  setEmitter: db.prepare('UPDATE targets SET emitter = ? WHERE network_id = ? AND label = ?'),
   getStock: db.prepare('SELECT * FROM stock WHERE network_id = ?'),
   getNetworks: db.prepare('SELECT DISTINCT network_id FROM stock'),
   upsertStock: db.prepare(`
@@ -116,8 +118,13 @@ export function upsertTarget(networkId, target) {
     batch_size: target.batch_size ?? 1,
     fluid_tag: target.fluid_tag ?? null,
     is_fluid: target.is_fluid ? 1 : 0,
-    enabled: target.enabled === false ? 0 : 1
+    enabled: target.enabled === false ? 0 : 1,
+    emitter: target.emitter ?? null
   })
+}
+
+export function setEmitter(networkId, label, emitter) {
+  q.setEmitter.run(emitter, networkId, label)
 }
 
 export function getTarget(networkId, label) {
@@ -201,7 +208,7 @@ let auditWrites = 0
 export function audit(networkId, user, action, entry = {}) {
   q.insertAudit.run({
     network_id: networkId,
-    at: Date.now(),
+    at: entry.at ?? Date.now(),
     user,
     action,
     label: entry.label ?? null,
@@ -230,7 +237,8 @@ export function replaceTargets(networkId, targets) {
         batch_size: t.batch_size ?? 1,
         fluid_tag: t.fluid_tag ?? null,
         is_fluid: t.is_fluid ? 1 : 0,
-        enabled: t.enabled === false ? 0 : 1
+        enabled: t.enabled === false ? 0 : 1,
+        emitter: t.emitter ?? null
       })
     }
   })()

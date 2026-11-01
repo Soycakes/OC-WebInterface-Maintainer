@@ -12,10 +12,24 @@ const itemRegistry = JSON.parse(readFileSync(resolve(dir, '../client/public/gtnh
 const iconMap = new Map(itemRegistry.map(i => [i.label, { x: i.x, y: i.y }]))
 
 function withIcons(targets) {
-  return targets.map(t => ({ ...t, ...iconMap.get(t.label) }))
+  return targets.map(t => ({ ...t, emitter: t.emitter ? JSON.parse(t.emitter) : null, ...iconMap.get(t.label) }))
+}
+
+const MAX_EMITTER_RULES = 10
+
+function parseEmitter(value) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.rules)) return null
+  const rules = []
+  for (const r of value.rules.slice(0, MAX_EMITTER_RULES)) {
+    const amount = Math.floor(Number(r?.amount))
+    if (typeof r?.label !== 'string' || !r.label.trim() || !Number.isFinite(amount) || amount < 0) continue
+    rules.push({ label: r.label, is_fluid: Boolean(r.is_fluid), amount, below: Boolean(r.below) })
+  }
+  if (rules.length === 0) return null
+  return JSON.stringify({ mode: value.mode === 'or' ? 'or' : 'and', rules })
 }
 import {
-  getTargets, getTarget, upsertTarget, deleteTarget, replaceTargets,
+  getTargets, getTarget, upsertTarget, deleteTarget, replaceTargets, setEmitter,
   getGroups, moveTargets, createGroup, renameGroup, deleteGroup, replaceLayout,
   audit, getAudit,
   getStock, getNetworks,
@@ -131,7 +145,8 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
       threshold: t.threshold,
       batch_size: t.batch_size,
       fluid_tag: t.fluid_tag,
-      is_fluid: t.is_fluid
+      is_fluid: t.is_fluid,
+      emitter: t.emitter ? JSON.parse(t.emitter) : undefined
     }))
   res.json({ targets: ocTargets, maintainer_sleep: settings.maintainer_sleep })
 })
@@ -186,20 +201,61 @@ function parseTarget(body) {
     batch_size: Math.floor(parsedBatch),
     fluid_tag: fluid_tag ?? null,
     is_fluid: Boolean(is_fluid),
-    enabled: enabled !== false
+    enabled: enabled !== false,
+    emitter: parseEmitter(body.emitter)
   }
 }
 
-function auditChanges(req, before, after) {
-  const id = req.params.networkId
-  for (const field of ['threshold', 'batch_size']) {
-    if (before[field] !== after[field]) {
-      audit(id, req.user, 'edit', { label: after.label, field, old_value: before[field], new_value: after[field] })
-    }
+const AUDIT_SETTLE_MS = 60000
+const pendingAudit = new Map()
+
+function readState(networkId, label) {
+  if (label === null) return getSettings(networkId).maintainer_sleep
+  const t = getTarget(networkId, label)
+  if (!t) return null
+  return { threshold: t.threshold, batch_size: t.batch_size, enabled: t.enabled !== 0, emitter: t.emitter ? JSON.parse(t.emitter) : null }
+}
+
+function noteChange(req, label) {
+  const networkId = req.params.networkId
+  const key = JSON.stringify([networkId, label])
+  let entry = pendingAudit.get(key)
+  if (!entry) {
+    entry = { networkId, label, before: readState(networkId, label), users: new Set() }
+    pendingAudit.set(key, entry)
   }
-  if ((before.enabled !== 0) !== after.enabled) {
-    audit(id, req.user, after.enabled ? 'enable' : 'disable', { label: after.label })
+  entry.users.add(req.user)
+  entry.at = Date.now()
+  clearTimeout(entry.timer)
+  entry.timer = setTimeout(() => flushChange(key), AUDIT_SETTLE_MS)
+}
+
+function flushChange(key) {
+  const entry = pendingAudit.get(key)
+  pendingAudit.delete(key)
+  clearTimeout(entry.timer)
+  const after = readState(entry.networkId, entry.label)
+  if (JSON.stringify(after) === JSON.stringify(entry.before)) return
+  const user = [...entry.users].join(', ')
+  if (entry.label === null) {
+    audit(entry.networkId, user, 'edit', { field: 'check interval', old_value: entry.before, new_value: after, at: entry.at })
+  } else {
+    const json = state => state && JSON.stringify(state)
+    audit(entry.networkId, user, 'change', { label: entry.label, old_value: json(entry.before), new_value: json(after), at: entry.at })
   }
+}
+
+function flushPending(networkId) {
+  for (const [key, entry] of pendingAudit) {
+    if (networkId === undefined || entry.networkId === networkId) flushChange(key)
+  }
+}
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    flushPending()
+    process.exit(0)
+  })
 }
 
 app.post('/api/targets/:networkId', browserAuth, (req, res) => {
@@ -209,10 +265,8 @@ app.post('/api/targets/:networkId', browserAuth, (req, res) => {
   }
   const target = parseTarget(req.body)
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
-  const before = getTarget(req.params.networkId, target.label)
+  noteChange(req, target.label)
   upsertTarget(req.params.networkId, target)
-  if (before) auditChanges(req, before, target)
-  else audit(req.params.networkId, req.user, 'create', { label: target.label, new_value: target.threshold })
   broadcastTargets(req.params.networkId)
   res.json({ ok: true })
 })
@@ -226,6 +280,7 @@ app.put('/api/targets/:networkId/bulk', browserAuth, (req, res) => {
     if (!t) return res.status(400).json({ error: `invalid target: ${item?.label}` })
     parsed.push(t)
   }
+  flushPending(req.params.networkId)
   replaceTargets(req.params.networkId, parsed)
   audit(req.params.networkId, req.user, 'import', { new_value: parsed.length })
   broadcastTargets(req.params.networkId)
@@ -235,17 +290,29 @@ app.put('/api/targets/:networkId/bulk', browserAuth, (req, res) => {
 app.put('/api/targets/:networkId/:label', browserAuth, (req, res) => {
   const target = parseTarget({ ...req.body, label: req.params.label })
   if (!target) return res.status(400).json({ error: 'invalid threshold or batch_size' })
-  const before = getTarget(req.params.networkId, target.label)
+  noteChange(req, target.label)
   upsertTarget(req.params.networkId, target)
-  if (before) auditChanges(req, before, target)
   broadcastTargets(req.params.networkId)
+  res.json({ ok: true })
+})
+
+app.put('/api/targets/:networkId/:label/emitter', browserAuth, (req, res) => {
+  const { networkId, label } = req.params
+  const before = getTarget(networkId, label)
+  if (!before) return res.status(404).json({ error: 'unknown target' })
+  const emitter = parseEmitter(req.body)
+  if (emitter !== before.emitter) {
+    noteChange(req, label)
+    setEmitter(networkId, label, emitter)
+    broadcastTargets(networkId)
+  }
   res.json({ ok: true })
 })
 
 app.delete('/api/targets/:networkId/:label', browserAuth, (req, res) => {
   if (getTarget(req.params.networkId, req.params.label)) {
+    noteChange(req, req.params.label)
     deleteTarget(req.params.networkId, req.params.label)
-    audit(req.params.networkId, req.user, 'remove', { label: req.params.label })
   }
   broadcastTargets(req.params.networkId)
   res.json({ ok: true })
@@ -322,9 +389,8 @@ app.get('/api/settings/:networkId', browserAuth, (req, res) => {
 app.put('/api/settings/:networkId', browserAuth, (req, res) => {
   const sleep = Math.floor(Number(req.body.maintainer_sleep))
   if (!Number.isFinite(sleep) || sleep < 5) return res.status(400).json({ error: 'invalid' })
-  const old = getSettings(req.params.networkId).maintainer_sleep
+  noteChange(req, null)
   setSettings(req.params.networkId, { maintainer_sleep: sleep })
-  if (old !== sleep) audit(req.params.networkId, req.user, 'edit', { field: 'check interval', old_value: old, new_value: sleep })
   res.json({ ok: true })
 })
 
