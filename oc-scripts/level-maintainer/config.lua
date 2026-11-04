@@ -1,14 +1,8 @@
 return {
-  sleep = 10,
+  server = "http://127.0.0.1:3000",
+  api_key = "change-me",
+  network_id = "main",
+
+  timeout = 5,
   debug = true,
-
-  items = {
-    ["Iron Plate"] = {nil, 16},
-    -- ["Osmium Dust"] = {nil, 64},
-    -- ["drop of Molten SpaceTime"] = {1000000, 1, "spacetime"},
-  },
-
-  fluids = {
-    -- ["Steam"] = {1000000, 100000},
-  },
 }

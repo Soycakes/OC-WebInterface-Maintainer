@@ -8,7 +8,7 @@ echo  OC Level Maintainer
 echo  --------------------
 echo.
 set /p PASS=  Browser password:
-set /p KEY=  API key (copy this into connector\config.lua):
+set /p KEY=  API key (copy this into the maintainer OC config.lua):
 set /p PORT=  Port [3000]:
 if "!PORT!"=="" set PORT=3000
 

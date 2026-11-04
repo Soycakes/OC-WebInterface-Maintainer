@@ -16,7 +16,7 @@ local function encode_value(val)
     else
       local parts = {}
       for k, v in pairs(val) do
-        parts[#parts + 1] = '"' .. tostring(k) .. '":' .. encode_value(v)
+        parts[#parts + 1] = encode_value(tostring(k)) .. ':' .. encode_value(v)
       end
       return "{" .. table.concat(parts, ",") .. "}"
     end

@@ -1,25 +1,22 @@
 local component = require("component")
 local computer = require("computer")
-local event = require("event")
-local serialization = require("serialization")
 local ae2 = require("src.ae2")
+local json = require("src.json")
 local cfg = require("config")
 
-local tunnel = component.tunnel
+assert(cfg.server, "config.lua is missing server, api_key and network_id. Delete it and run install-maintainer again.")
 
-local items = cfg.items or {}
-local fluids = cfg.fluids or {}
-local currentSleep = cfg.sleep or 5
+local internet = component.internet
+
+local items = {}
+local fluids = {}
+local currentSleep = 10
 local debugEnabled = cfg.debug == true
-
-if fluids and next(fluids) and not ae2.hasFluidSupport() then
-  print("WARNING: fluids configured but ME interface does not support getFluidsInNetwork (needs GTNH 2.9+). Fluids skipped.")
-  fluids = {}
-end
+local lastBody = nil
 
 local lastCycleStatus = { crafting = {}, requested = {}, failed = {} }
 local cachedStock = {}
-local serializedStockCache = ""
+local sentStock = {}
 
 local gpu = component.isAvailable("gpu") and component.gpu or nil
 local screenW, screenH = 50, 16
@@ -82,6 +79,67 @@ local function drawScreen(active, requested, failed, queryTime, qCount)
   gpu.setForeground(0xFFFFFF)
 end
 
+local function post(path, body)
+  local handle, reason = internet.request(cfg.server .. path, json.encode(body), {
+    ["Content-Type"] = "application/json",
+    ["Authorization"] = "Bearer " .. (cfg.api_key or ""),
+  })
+  if not handle then error(reason, 0) end
+  local deadline = computer.uptime() + (cfg.timeout or 5)
+  local chunks = {}
+  local ok, err = pcall(function()
+    while true do
+      local chunk, readError = handle.read()
+      if not chunk then
+        if readError then error(readError, 0) end
+        return
+      end
+      if chunk ~= "" then
+        chunks[#chunks + 1] = chunk
+      elseif computer.uptime() > deadline then
+        error("timed out", 0)
+      else
+        os.sleep(0.05)
+      end
+    end
+  end)
+  handle.close()
+  if not ok then error(err, 0) end
+  return table.concat(chunks)
+end
+
+local function sync()
+  local changes = {}
+  for label, count in pairs(cachedStock) do
+    if sentStock[label] ~= count then changes[label] = count end
+  end
+  local body = post("/api/sync", {
+    network_id = cfg.network_id,
+    stock = next(changes) and changes or nil,
+    status = lastCycleStatus,
+  })
+  for label, count in pairs(changes) do sentStock[label] = count end
+  if body == lastBody then return end
+  local result = json.decode(body)
+  if type(result) ~= "table" or type(result.targets) ~= "table" then
+    error("bad response: " .. body:sub(1, 60), 0)
+  end
+  if result.resend_stock then sentStock = {} end
+  lastBody = body
+  items, fluids = {}, {}
+  for _, t in ipairs(result.targets) do
+    if t.is_fluid == 1 then fluids[t.label] = t else items[t.label] = t end
+  end
+  local sleep = tonumber(result.maintainer_sleep)
+  if sleep and sleep >= 5 then currentSleep = sleep end
+  ae2.forgetMissing()
+  log("targets updated from web")
+end
+
+local function trySync()
+  local ok, err = pcall(sync)
+  if not ok then log("sync failed: " .. tostring(err)) end
+end
 
 local function stock()
   local itemCounts = ae2.getItemCounts()
@@ -98,8 +156,8 @@ local function stock()
     counts[label] = fluidCount(label)
   end
   for _, list in ipairs({ items, fluids }) do
-    for _, config in pairs(list) do
-      for _, rule in ipairs(config[4] and config[4].rules or {}) do
+    for _, target in pairs(list) do
+      for _, rule in ipairs(target.emitter and target.emitter.rules or {}) do
         if counts[rule.label] == nil then
           counts[rule.label] = rule.is_fluid and fluidCount(rule.label) or itemCounts[rule.label] or 0
         end
@@ -122,100 +180,63 @@ local function emitterOn(emitter, counts)
   return all
 end
 
-local function handleModem(_, _, _, _, _, msg)
-  if msg == "requeststock" then
-    tunnel.send(serializedStockCache)
-    return
-  end
-if msg:sub(1, 8) == "setsleep" then
-    local n = tonumber(msg:sub(10))
-    if n and n >= 5 then
-      currentSleep = n
-      log("sleep set to " .. n .. "s")
-    end
-    return
-  end
-  local data = serialization.unserialize(msg)
-  if type(data) ~= "table" or not data.targets then return end
-  items = {}
-  fluids = {}
-  for _, t in ipairs(data.targets) do
-    if t.is_fluid == 1 then
-      fluids[t.label] = { t.threshold, t.batch_size, t.fluid_tag, t.emitter }
-    else
-      items[t.label] = { t.threshold, t.batch_size, t.fluid_tag, t.emitter }
+local function cycle()
+  if debugEnabled then ae2.resetQueryCount() end
+  local startTime = debugEnabled and computer.uptime() or nil
+  cachedStock = stock()
+  local active = ae2.crafting()
+  local cycleRequested = {}
+  local cycleFailed = {}
+  local cycleHeld = {}
+  local emitterStates = {}
+  for _, list in ipairs({ items, fluids }) do
+    for label, target in pairs(list) do
+      if target.emitter then emitterStates[label] = emitterOn(target.emitter, cachedStock) end
     end
   end
-  ae2.forgetMissing()
-  log("targets updated from web")
+  local function held(label, target)
+    if emitterStates[label] ~= false then return false end
+    if target.threshold ~= nil and (cachedStock[label] or 0) >= target.threshold then return false end
+    cycleHeld[label] = true
+    return true
+  end
+
+  for _, kind in ipairs({ { items, "" }, { fluids, " mB" } }) do
+    for label, target in pairs(kind[1]) do
+      if not active[label] and not held(label, target) then
+        local batch = target.batch_size or 1
+        local ok, msg = ae2.request(label, target.threshold, batch, cachedStock[label], kind[2])
+        if ok then
+          cycleRequested[label] = batch
+          ae2.clearCraftingCache()
+        elseif msg then
+          cycleFailed[label] = msg
+        end
+      end
+    end
+  end
+
+  local managedActive = {}
+  for label, count in pairs(active) do
+    if items[label] or fluids[label] then managedActive[label] = count end
+  end
+  lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed, held = cycleHeld, emitter = emitterStates }
+  local queryTime = debugEnabled and (computer.uptime() - startTime) or nil
+  local qCount = debugEnabled and ae2.getQueryCount() or nil
+  trySync()
+  drawScreen(active, cycleRequested, cycleFailed, queryTime, qCount)
+  logBuffer = {}
 end
 
 local function mainLoop()
-  cachedStock = stock()
-  serializedStockCache = serialization.serialize({ stock = cachedStock, status = lastCycleStatus })
-  event.listen("modem_message", handleModem)
+  trySync()
   while true do
+    cycle()
     os.sleep(currentSleep)
-
-    if debugEnabled then ae2.resetQueryCount() end
-    local startTime = debugEnabled and computer.uptime() or nil
-    cachedStock = stock()
-    local active = ae2.crafting()
-    local cycleRequested = {}
-    local cycleFailed = {}
-    local cycleHeld = {}
-    local emitterStates = {}
-    for _, list in ipairs({ items, fluids }) do
-      for label, config in pairs(list) do
-        if config[4] then emitterStates[label] = emitterOn(config[4], cachedStock) end
-      end
-    end
-    local function held(label, config)
-      if emitterStates[label] ~= false then return false end
-      if config[1] ~= nil and (cachedStock[label] or 0) >= config[1] then return false end
-      cycleHeld[label] = true
-      return true
-    end
-
-    for label, config in pairs(items) do
-      if not active[label] and not held(label, config) then
-        local ok, msg = ae2.request(label, config[1], config[2], cachedStock[label], "")
-        if ok then
-          cycleRequested[label] = config[2] or 1
-          ae2.clearCraftingCache()
-        elseif msg then
-          cycleFailed[label] = msg
-        end
-      end
-    end
-
-    for label, config in pairs(fluids) do
-      if not active[label] and not held(label, config) then
-        local ok, msg = ae2.request(label, config[1], config[2], cachedStock[label], " mB")
-        if ok then
-          cycleRequested[label] = config[2] or 1
-          ae2.clearCraftingCache()
-        elseif msg then
-          cycleFailed[label] = msg
-        end
-      end
-    end
-
-    local managedActive = {}
-    for label, count in pairs(active) do
-      if items[label] or fluids[label] then managedActive[label] = count end
-    end
-    lastCycleStatus = { crafting = managedActive, requested = cycleRequested, failed = cycleFailed, held = cycleHeld, emitter = emitterStates }
-    serializedStockCache = serialization.serialize({ stock = cachedStock, status = lastCycleStatus })
-    local queryTime = debugEnabled and (computer.uptime() - startTime) or nil
-    local qCount = debugEnabled and ae2.getQueryCount() or nil
-    drawScreen(active, cycleRequested, cycleFailed, queryTime, qCount)
-    logBuffer = {}
   end
 end
 
 local ok, err = pcall(mainLoop)
-event.ignore("modem_message", handleModem)
 if not ok then
   print("Stopped: " .. tostring(err))
 end

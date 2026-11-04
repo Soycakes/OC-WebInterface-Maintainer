@@ -14,19 +14,13 @@ Regarding setting up server, everything should be completely safe as long as at 
 
 ## How it works
 
-Two OC computers run ingame  
+One OC computer runs ingame, maintaining your AE2 stock and syncing with the web app  
 Web app runs on either local or on a server
-  
-One manages your AE2 system  
-One connects it to the web server  
 
 # Open Computers Setup
->**OpenComputers Linked Card**  
-Craft 2 together to link them to same channel, then put each into both your **Maintainer** and **Connector** computers.
 
 ### Maintainer  
-OC that runs the logic to actually maintain and send ae2 request  
-> **This computer needs Adapter** touching main crafting network's ME Interface
+> **This computer needs Adapter** touching main crafting network's ME Interface, and an **Internet Card**
 
 To install, run
 ```
@@ -34,17 +28,7 @@ wget https://raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/
 ```
 then run `Maintainer` to run the program
 
-### Connector  
-OC that connects Maintainer to web app transferring needed data between  
-
-> **This computer needs Internet Card.**  
-> Also make sure Linked card (2x crafted together) is in BOTH this and the maintainer OC
-
-To install, run
-```
-wget https://raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/install-connector.lua && install-connector
-```
-then run `Connector` to run the program
+> Upgrading from the old 2-computer setup? Delete the maintainer's old `config.lua` before running the installer, and the Connector computer and Linked Cards are no longer needed.
 
 ---
 
@@ -78,9 +62,9 @@ Free tier covers normal usage.
 1. Click the button above and sign in with GitHub
 2. Deploy
 3. (Optional) in Variables tab, add `BROWSER_PASSWORD` (used as password for your website)
-4. (Optional) in same place, add `API_KEY` (any string you choose, add this in Connector OC's config.lua)
+4. (Optional) in same place, add `API_KEY` (any string you choose, add this in Maintainer OC's config.lua)
 5. In Settings tab, scroll down to Networking, and click "Generate Domain". This is your URL for your website.
-6. Add the website URL in Connector OC's config.lua (type "edit config.lua", type in value `server = "https://Railway-URL-Here",` then `Ctrl+S Ctrl+W` to save&close)  
+6. Add the website URL in Maintainer OC's config.lua (type "edit config.lua", type in value `server = "https://Railway-URL-Here",` then `Ctrl+S Ctrl+W` to save&close)  
   
 If any changes were made in 3,4 make sure to click Deploy in middle area of the page
 
@@ -98,15 +82,19 @@ Runs on VPS. More setup than Railway but no usage limits.
 
 ### Open Computer Configs
 
-As said above, you need to change 'Connector' OC's config.lua
+As said above, you need to change 'Maintainer' OC's config.lua
 
 ```lua
 return {
   server = "https://your-app.railway.app", -- Railway server URL
   api_key = "your-api-key", -- Can be blank
   network_id = "main", -- Don't touch this, WIP
+  timeout = 5, -- Seconds to wait for the web server before giving up on that sync
+  debug = true, -- Shows ME call count and time on screen
 }
 ```
+
+Items to maintain and the check interval are set on the website.
 
 ---
 

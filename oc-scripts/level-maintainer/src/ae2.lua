@@ -74,9 +74,10 @@ function ae2.request(name, threshold, batch, count, unit)
   end
   queryCount = queryCount + 1
   local craft = craftable.request(batch)
-  while craft.isComputing() do os.sleep(1) end
-  if craft.hasFailed() then
-    return false, "failed to request " .. name .. " x " .. batch .. unit
+  while craft.isComputing() do os.sleep(0.1) end
+  local failed, reason = craft.hasFailed()
+  if failed then
+    return false, name .. " x " .. batch .. unit .. ": " .. (reason or "request failed")
   end
   return true, "requested " .. name .. " x " .. batch .. unit
 end
@@ -105,10 +106,6 @@ end
 function ae2.clearCraftingCache()
   craftingCache = nil
   craftingCacheTime = 0
-end
-
-function ae2.hasFluidSupport()
-  return ME.getFluidsInNetwork ~= nil
 end
 
 return ae2

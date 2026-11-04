@@ -93,7 +93,7 @@ const server = createServer(app)
 const wss = new WebSocketServer({ server })
 
 const lastSync = {}
-const lastStockStr = {}
+const lastStatusStr = {}
 
 function rateLimit(req, res, next) {
   const id = req.body?.network_id
@@ -129,13 +129,12 @@ function broadcastTargets(networkId) {
 app.post('/api/sync', auth, rateLimit, (req, res) => {
   const { network_id, stock, status } = req.body
   if (!network_id) return res.status(400).json({ error: 'network_id required' })
-  if (stock) {
-    const str = JSON.stringify({ stock, status })
-    if (str !== lastStockStr[network_id]) {
-      lastStockStr[network_id] = str
-      updateStock(network_id, stock)
-      broadcast({ type: 'stock', network_id, stock, status })
-    }
+  const resend = !(network_id in lastStatusStr)
+  const statusStr = JSON.stringify(status)
+  if (stock) updateStock(network_id, stock)
+  if (stock || statusStr !== lastStatusStr[network_id]) {
+    lastStatusStr[network_id] = statusStr
+    broadcast({ type: 'stock', network_id, stock: stock ?? {}, status })
   }
   const settings = getSettings(network_id)
   const ocTargets = getTargets(network_id)
@@ -148,7 +147,7 @@ app.post('/api/sync', auth, rateLimit, (req, res) => {
       is_fluid: t.is_fluid,
       emitter: t.emitter ? JSON.parse(t.emitter) : undefined
     }))
-  res.json({ targets: ocTargets, maintainer_sleep: settings.maintainer_sleep })
+  res.json({ targets: ocTargets, maintainer_sleep: settings.maintainer_sleep, ...(resend && { resend_stock: true }) })
 })
 
 app.post('/api/login', (req, res) => {
