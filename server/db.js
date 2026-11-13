@@ -70,6 +70,8 @@ const q = {
       enabled = excluded.enabled
   `),
   deleteTarget: db.prepare('DELETE FROM targets WHERE network_id = ? AND label = ?'),
+  renameTarget: db.prepare('UPDATE targets SET label = ?, is_fluid = ? WHERE network_id = ? AND label = ?'),
+  setEnabled: db.prepare('UPDATE targets SET enabled = ? WHERE network_id = ? AND label = ?'),
   setEmitter: db.prepare('UPDATE targets SET emitter = ? WHERE network_id = ? AND label = ?'),
   getStock: db.prepare('SELECT * FROM stock WHERE network_id = ?'),
   getNetworks: db.prepare('SELECT DISTINCT network_id FROM stock'),
@@ -129,6 +131,16 @@ export function setEmitter(networkId, label, emitter) {
 
 export function getTarget(networkId, label) {
   return q.getTarget.get(networkId, label)
+}
+
+export function renameTarget(networkId, label, newLabel, isFluid) {
+  q.renameTarget.run(newLabel, isFluid ? 1 : 0, networkId, label)
+}
+
+export function setEnabled(networkId, labels, enabled) {
+  db.transaction(() => {
+    for (const label of labels) q.setEnabled.run(enabled ? 1 : 0, networkId, label)
+  })()
 }
 
 export function deleteTarget(networkId, label) {
@@ -229,18 +241,7 @@ export function replaceTargets(networkId, targets) {
   db.transaction(() => {
     q.deleteAllTargets.run(networkId)
     q.deleteAllGroups.run(networkId)
-    for (const t of targets) {
-      q.upsertTarget.run({
-        network_id: networkId,
-        label: t.label,
-        threshold: t.threshold ?? null,
-        batch_size: t.batch_size ?? 1,
-        fluid_tag: t.fluid_tag ?? null,
-        is_fluid: t.is_fluid ? 1 : 0,
-        enabled: t.enabled === false ? 0 : 1,
-        emitter: t.emitter ?? null
-      })
-    }
+    for (const t of targets) upsertTarget(networkId, t)
   })()
 }
 

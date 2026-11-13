@@ -69,10 +69,6 @@ function formatShort(n) {
   return String(num)
 }
 
-function formatCount(n) {
-  return formatShort(n)
-}
-
 function parseAmount(str) {
   if (!str || str.trim() === '') return null
   const multipliers = { k: 1e3, m: 1e6, b: 1e9, g: 1e9, t: 1e12, q: 1e15 }
@@ -98,7 +94,7 @@ function iconHtml(x, y) {
   return `<span class="gtnh-icon" style="${iconStyle(x, y)}"></span>`
 }
 
-function showToast(message, type = 'success', action = null) {
+function showToast(message, type = 'success') {
   let container = document.getElementById('toast-container')
   if (!container) {
     container = document.createElement('div')
@@ -108,31 +104,7 @@ function showToast(message, type = 'success', action = null) {
   }
   const toast = document.createElement('div')
   toast.className = `toast toast-${type}`
-  
-  const textNode = document.createElement('span')
-  textNode.textContent = message
-  toast.appendChild(textNode)
-
-  if (action && action.text && action.callback) {
-    const btn = document.createElement('button')
-    btn.textContent = action.text
-    btn.style.marginLeft = '8px'
-    btn.style.background = 'none'
-    btn.style.border = 'none'
-    btn.style.color = type === 'error' ? '#ffaaaa' : '#55ff55'
-    btn.style.textDecoration = 'underline'
-    btn.style.cursor = 'pointer'
-    btn.style.fontWeight = 'bold'
-    btn.style.padding = '0'
-    btn.onclick = (e) => {
-      e.stopPropagation()
-      action.callback()
-      toast.classList.remove('show')
-      setTimeout(() => toast.remove(), 200)
-    }
-    toast.appendChild(btn)
-  }
-
+  toast.textContent = message
   container.appendChild(toast)
   setTimeout(() => toast.classList.add('show'), 10)
   setTimeout(() => {
@@ -304,12 +276,7 @@ function renderUserBox() {
 
 async function saveTarget(label, data) {
   try {
-    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    })
-    if (!res.ok) throw new Error()
+    await send('PUT', `/api/targets/${networkId}/${encodeURIComponent(label)}`, data)
     isDirty = true
   } catch {
     showToast(msg.saveFailed, 'error')
@@ -322,18 +289,7 @@ async function addTarget(label, threshold, batchSize, isFluid, enabled) {
   const parsedBatch = clampAmount(parseAmount(batchSize) ?? 1)
 
   try {
-    const res = await fetch(`/api/targets/${networkId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label,
-        threshold: parsedThreshold,
-        batch_size: parsedBatch,
-        is_fluid: isFluid,
-        enabled
-      })
-    })
-    if (!res.ok) throw new Error()
+    await send('POST', `/api/targets/${networkId}`, { label, threshold: parsedThreshold, batch_size: parsedBatch, is_fluid: isFluid, enabled })
     isDirty = true
     pendingAdd = null
     renderAddPanel()
@@ -345,8 +301,7 @@ async function addTarget(label, threshold, batchSize, isFluid, enabled) {
 
 async function removeTarget(label) {
   try {
-    const res = await fetch(`/api/targets/${networkId}/${encodeURIComponent(label)}`, { method: 'DELETE' })
-    if (!res.ok) throw new Error()
+    await send('DELETE', `/api/targets/${networkId}/${encodeURIComponent(label)}`)
     isDirty = true
     await refreshTargets()
   } catch {
@@ -355,31 +310,23 @@ async function removeTarget(label) {
 }
 
 async function changeTargetItem(oldLabel, newLabel, newIsFluid) {
-  const index = targets.findIndex(t => t.label === oldLabel)
-  const old = targets[index]
-  const nextLabel = targets[index + 1]?.label ?? null
   try {
-    const res1 = await fetch(`/api/targets/${networkId}/${encodeURIComponent(oldLabel)}`, { method: 'DELETE' })
-    if (!res1.ok) throw new Error()
-    const res2 = await fetch(`/api/targets/${networkId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        label: newLabel,
-        threshold: old?.threshold ?? null,
-        batch_size: old?.batch_size ?? 1,
-        is_fluid: newIsFluid,
-        enabled: old?.enabled !== 0,
-        emitter: old?.emitter ?? null
-      })
-    })
-    if (!res2.ok) throw new Error()
+    await send('PUT', `/api/targets/${networkId}/${encodeURIComponent(oldLabel)}/item`, { label: newLabel, is_fluid: newIsFluid })
     isDirty = true
-    await send('POST', `/api/layout/${networkId}/move`, { labels: [newLabel], before: nextLabel, group_id: old?.group_id ?? null })
-    await refreshTargets()
+  } catch (e) {
+    showToast(e.message === '409' ? `${newLabel} is already in the list` : msg.saveFailed, 'error')
+  }
+  refreshTargets()
+}
+
+async function setEnabled(labels, enabled) {
+  try {
+    await send('POST', `/api/targets/${networkId}/enabled`, { labels, enabled })
+    isDirty = true
   } catch {
     showToast(msg.saveFailed, 'error')
   }
+  refreshTargets()
 }
 
 
@@ -436,6 +383,12 @@ function connectWs() {
   const socket = new WebSocket(`${proto}://${location.host}/ws`)
   ws = socket
 
+  socket.onopen = async () => {
+    await Promise.all([fetchTargets(), fetchStock()])
+    if (isDragging || isEditing()) tableStale = true
+    else renderTable()
+  }
+
   socket.onmessage = (event) => {
     const data = JSON.parse(event.data)
     if (data.network_id !== networkId) return
@@ -463,13 +416,9 @@ function connectWs() {
   }
 }
 
-document.addEventListener('visibilitychange', async () => {
-  if (document.hidden) { ws?.close(); return }
-  if (!networkId) return
-  connectWs()
-  await Promise.all([fetchTargets(), fetchStock()])
-  if (isDragging || isEditing()) tableStale = true
-  else renderTable()
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) ws?.close()
+  else connectWs()
 })
 
 function updateStatusCounts() {
@@ -502,8 +451,9 @@ function updateStockCells() {
     if (!t) continue
     const cell = row.querySelector('[data-stock]')
     const count = stock[t.label]
-    cell.textContent = count === undefined ? '...' : formatCount(count)
+    cell.textContent = count === undefined ? '...' : formatShort(count)
     cell.dataset.tip = count === undefined ? 'Loading...' : count.toLocaleString()
+    row.querySelector('.item-slot').dataset.tipBody = failReason(t.label)
     const keep = ['group-first', 'group-middle', 'group-last', 'group-single', 'row-disabled'].filter(c => row.classList.contains(c))
     row.className = [rowStatusClass(t.label, t), ...keep].filter(Boolean).join(' ')
     const torch = row.querySelector('.emitter-btn')
@@ -590,12 +540,12 @@ async function importBundle(data) {
   const error = validateBundle(data)
   if (error) { showToast(`Import failed: ${error}`, 'error'); return }
 
-  const res = await fetch(`/api/targets/${networkId}/bulk`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ targets: data.targets })
-  })
-  if (!res.ok) { showToast('Import failed: server rejected data', 'error'); return }
+  try {
+    await send('PUT', `/api/targets/${networkId}/bulk`, { targets: data.targets })
+  } catch {
+    showToast('Import failed: server rejected data', 'error')
+    return
+  }
 
   await uploadLayout(
     Array.isArray(data.order) ? data.order : data.targets.map(t => t.label),
@@ -603,12 +553,9 @@ async function importBundle(data) {
   ).catch(() => showToast('Imported targets, but groups/order failed to save', 'error'))
 
   if (data.settings?.maintainer_sleep) {
-    await fetch(`/api/settings/${networkId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maintainer_sleep: data.settings.maintainer_sleep })
-    })
-    maintainerSleep = data.settings.maintainer_sleep
+    await send('PUT', `/api/settings/${networkId}`, { maintainer_sleep: data.settings.maintainer_sleep })
+      .then(() => { maintainerSleep = data.settings.maintainer_sleep })
+      .catch(() => showToast('Imported targets, but check interval failed to save', 'error'))
   }
 
   await fetchTargets()
@@ -744,8 +691,8 @@ function auditTip(e) {
 }
 
 function describeAudit(e) {
-  const amount = amountText
   if (e.action === 'change') return describeChange(e)
+  if (e.action === 'replace') return `<span class="audit-changed">replaced</span> ${auditItem(e.old_value)} with ${auditItem(e.label)}`
   const field = e.field === 'batch_size' ? 'batch size' : e.field
   if (e.action === 'import') return `imported ${esc(e.new_value)} targets`
   if (e.action === 'create') return `<span class="audit-added">added</span> ${auditItem(e.label)}`
@@ -760,7 +707,7 @@ function describeAudit(e) {
   const subject = e.label ? `${auditItem(e.label)} ${esc(field)}` : esc(field)
   const asNumber = v => v === null ? Infinity : Number(v)
   const trend = asNumber(e.new_value) > asNumber(e.old_value) ? 'audit-added' : 'audit-removed'
-  return `<span class="audit-changed">changed</span> ${subject} ${amount(e.old_value)} → <span class="${trend}">${amount(e.new_value)}</span>`
+  return `<span class="audit-changed">changed</span> ${subject} ${amountText(e.old_value)} → <span class="${trend}">${amountText(e.new_value)}</span>`
 }
 
 function openHistoryModal() {
@@ -784,7 +731,7 @@ function openHistoryModal() {
 
   function draw() {
     const tokens = tokenize(filter.value)
-    const shown = entries.filter(e => matchesTokens(`${e.user} ${e.label ?? ''} ${e.field ?? ''} ${e.action}`, tokens))
+    const shown = entries.filter(e => matchesTokens(`${e.user} ${e.label ?? ''} ${e.field ?? ''} ${e.action} ${e.action === 'replace' ? e.old_value : ''}`, tokens))
     list.innerHTML = shown.map(e => `
       <div class="history-row">
         <span class="history-time" data-tip="${esc(new Date(e.at).toLocaleString())}">${timeAgo(e.at)}</span>
@@ -1010,12 +957,8 @@ function render() {
       e.target.value = maintainerSleep
       return
     }
-    const res = await fetch(`/api/settings/${networkId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maintainer_sleep: val })
-    }).catch(() => null)
-    if (!res?.ok) {
+    const saved = await send('PUT', `/api/settings/${networkId}`, { maintainer_sleep: val }).catch(() => null)
+    if (!saved) {
       showToast(msg.saveFailed, 'error')
       e.target.value = maintainerSleep
       return
@@ -1056,6 +999,11 @@ function renderNetworkBar() {
     await Promise.all([fetchTargets(), fetchStock()])
     render()
   }
+}
+
+function failReason(label) {
+  const reason = itemStatus.failed?.[label]
+  return reason ? `§c${reason}` : ''
 }
 
 function rowStatusClass(label, target) {
@@ -1270,7 +1218,7 @@ function setupBracketDrag(container) {
 }
 
 function setupTableEvents(container) {
-  container.addEventListener('click', async (e) => {
+  container.addEventListener('click', (e) => {
     const el = e.target.closest('[data-delete], [data-toggle], [data-change], [data-emitter], .group-toggle-btn, .expand-btn')
     if (!el) return
 
@@ -1278,11 +1226,9 @@ function setupTableEvents(container) {
     if ('emitter' in el.dataset) return openEmitterModal(el.dataset.emitter)
 
     if ('toggle' in el.dataset) {
-      const label = el.dataset.toggle
-      const t = targets.find(t => t.label === label)
-      if (!t) return
-      await saveTarget(label, { ...getRowData(label), enabled: t.enabled === 0 }).catch(() => {})
-      return refreshTargets()
+      const t = targets.find(t => t.label === el.dataset.toggle)
+      if (t) setEnabled([t.label], t.enabled === 0)
+      return
     }
 
     if ('change' in el.dataset) {
@@ -1298,12 +1244,8 @@ function setupTableEvents(container) {
 
     if (el.classList.contains('expand-btn')) return setCollapsed(g.id, false)
 
-    const groupTargets = targets.filter(t => g.labels.includes(t.label))
-    const allEnabled = groupTargets.every(t => t.enabled !== 0)
-    await Promise.all(groupTargets.map(t =>
-      saveTarget(t.label, { threshold: t.threshold, batch_size: t.batch_size, is_fluid: t.is_fluid ?? false, enabled: !allEnabled })
-    )).catch(() => {})
-    refreshTargets()
+    const allEnabled = targets.every(t => !g.labels.includes(t.label) || t.enabled !== 0)
+    setEnabled(g.labels, !allEnabled)
   })
 
   container.addEventListener('focusin', (e) => {
@@ -1375,7 +1317,7 @@ function renderTable() {
 
     const t = entry.target
     const count = stock[t.label]
-    const stockDisplay = count === undefined ? '...' : formatCount(count)
+    const stockDisplay = count === undefined ? '...' : formatShort(count)
     const stockTitle = count === undefined ? 'Loading...' : count.toLocaleString()
     const thresholdVal = formatShort(t.threshold)
     const batchVal = formatShort(t.batch_size ?? 1)
@@ -1400,7 +1342,7 @@ function renderTable() {
           </button>
         </td>
         <td>
-          <div class="item-slot" data-change="${label}">
+          <div class="item-slot" data-change="${label}" data-tip="${label}" data-tip-body="${esc(failReason(t.label))}">
             ${iconHtml(t.x, t.y)}
             <span>${label}</span>
           </div>
@@ -1580,7 +1522,7 @@ function renderAddPanel() {
 
   document.getElementById('add-slot').onclick = () => {
     openItemPicker(item => {
-      const reg = registry.find(i => i.label === item.label)
+      const reg = registryEntry(item.label)
       pendingAdd = { ...item, x: reg?.x, y: reg?.y, ...addDefaults }
       renderAddPanel()
     })

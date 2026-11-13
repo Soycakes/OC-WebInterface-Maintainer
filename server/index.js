@@ -6,6 +6,14 @@ import { createHmac, timingSafeEqual } from 'crypto'
 import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import {
+  getTargets, getTarget, upsertTarget, deleteTarget, replaceTargets, setEmitter, renameTarget, setEnabled,
+  getGroups, moveTargets, createGroup, renameGroup, deleteGroup, replaceLayout,
+  audit, getAudit,
+  getStock, getNetworks,
+  updateStock,
+  getSettings, setSettings
+} from './db.js'
 
 const dir = dirname(fileURLToPath(import.meta.url))
 const itemRegistry = JSON.parse(readFileSync(resolve(dir, '../client/public/gtnh_registry.json'), 'utf8'))
@@ -28,14 +36,6 @@ function parseEmitter(value) {
   if (rules.length === 0) return null
   return JSON.stringify({ mode: value.mode === 'or' ? 'or' : 'and', rules })
 }
-import {
-  getTargets, getTarget, upsertTarget, deleteTarget, replaceTargets, setEmitter,
-  getGroups, moveTargets, createGroup, renameGroup, deleteGroup, replaceLayout,
-  audit, getAudit,
-  getStock, getNetworks,
-  updateStock,
-  getSettings, setSettings
-} from './db.js'
 
 if (!process.env.BROWSER_PASSWORD) {
   console.log('WARNING : No BROWSER_PASSWORD in .env, anyone can access the page with link!')
@@ -305,6 +305,28 @@ app.put('/api/targets/:networkId/:label/emitter', browserAuth, (req, res) => {
     setEmitter(networkId, label, emitter)
     broadcastTargets(networkId)
   }
+  res.json({ ok: true })
+})
+
+app.put('/api/targets/:networkId/:label/item', browserAuth, (req, res) => {
+  const { networkId, label } = req.params
+  const newLabel = req.body?.label
+  if (typeof newLabel !== 'string' || !newLabel.trim()) return res.status(400).json({ error: 'label required' })
+  if (!getTarget(networkId, label)) return res.status(404).json({ error: 'unknown target' })
+  if (getTarget(networkId, newLabel)) return res.status(409).json({ error: 'already in the list' })
+  flushPending(networkId)
+  renameTarget(networkId, label, newLabel, req.body.is_fluid)
+  audit(networkId, req.user, 'replace', { label: newLabel, old_value: label })
+  broadcastTargets(networkId)
+  res.json({ ok: true })
+})
+
+app.post('/api/targets/:networkId/enabled', browserAuth, (req, res) => {
+  const labels = labelList(req.body?.labels)
+  if (!labels?.length) return res.status(400).json({ error: 'labels required' })
+  for (const label of labels) noteChange(req, label)
+  setEnabled(req.params.networkId, labels, req.body.enabled !== false)
+  broadcastTargets(req.params.networkId)
   res.json({ ok: true })
 })
 
