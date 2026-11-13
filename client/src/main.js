@@ -84,14 +84,13 @@ function parseAmount(str) {
   } catch { return null }
 }
 
-function iconStyle(x, y) {
-  if (x === undefined || y === undefined) return ''
-  return `background-position: -${x}px -${y}px`
-}
+const ATLAS_TILE = 512
 
-function iconHtml(x, y) {
-  if (x === undefined || y === undefined) return '<span class="gtnh-icon gtnh-icon-missing"></span>'
-  return `<span class="gtnh-icon" style="${iconStyle(x, y)}"></span>`
+function iconHtml(label) {
+  const icon = registryEntry(label)
+  if (!icon) return '<span class="gtnh-icon gtnh-icon-missing"></span>'
+  const tile = `/atlas/${Math.floor(icon.x / ATLAS_TILE)}_${Math.floor(icon.y / ATLAS_TILE)}.webp`
+  return `<span class="gtnh-icon" style="background-image: url(${tile}); background-position: -${icon.x % ATLAS_TILE}px -${icon.y % ATLAS_TILE}px"></span>`
 }
 
 function showToast(message, type = 'success') {
@@ -155,6 +154,7 @@ document.addEventListener('mousemove', e => {
 async function fetchNetworks() {
   const res = await fetch('/api/networks')
   if (res.status === 401) return null
+  if (res.status === 503) throw Object.assign(new Error(await res.text()), { setup: true })
   return res.json()
 }
 
@@ -350,7 +350,7 @@ function openItemPicker(onSelect) {
   function renderResults(items) {
     grid.innerHTML = items.slice(0, 64).map(i => `
       <div class="picker-item" data-label="${esc(i.label)}" data-fluid="${i.is_fluid}" data-tip="${esc(i.label)}">
-        ${iconHtml(i.x, i.y)}
+        ${iconHtml(i.label)}
         <span class="picker-item-name">${esc(i.label)}</span>
       </div>
     `).join('')
@@ -623,8 +623,7 @@ function registryEntry(label) {
 }
 
 function auditItem(label) {
-  const reg = registryEntry(label)
-  return `<span class="history-item">${iconHtml(reg?.x, reg?.y)}${esc(label)}</span>`
+  return `<span class="history-item">${iconHtml(label)}${esc(label)}</span>`
 }
 
 const amountText = v => v === null ? 'infinite' : formatShort(v)
@@ -834,13 +833,11 @@ function openEmitterModal(label) {
   }
 
   function draw() {
-    const self = registryEntry(label)
     const rows = rules.map((r, i) => {
-      const reg = registryEntry(r.label)
       const count = stock[r.label]
       return `
         <div class="emitter-row">
-          <div class="mc-slot" data-pick="${i}" data-tip="${esc(r.label)}" data-tip-body="Click to change">${iconHtml(reg?.x, reg?.y)}</div>
+          <div class="mc-slot" data-pick="${i}" data-tip="${esc(r.label)}" data-tip-body="Click to change">${iconHtml(r.label)}</div>
           <span class="emitter-name" data-pick="${i}">${esc(r.label)}</span>
           <span class="${ruleMet(r) ? 'audit-added' : 'audit-removed'}" data-tip="${count === undefined ? 'Loading...' : count.toLocaleString()}">${count === undefined ? '...' : formatShort(count)}</span>
           <input type="text" data-amount="${i}" value="${formatShort(r.amount)}">
@@ -863,7 +860,7 @@ function openEmitterModal(label) {
           <span class="emitter-title">Advanced Emitter</span>
           <button id="picker-close">X</button>
         </div>
-        <div class="emitter-target">${iconHtml(self?.x, self?.y)}<span>Only craft <b>${esc(label)}</b> when:</span></div>
+        <div class="emitter-target">${iconHtml(label)}<span>Only craft <b>${esc(label)}</b> when:</span></div>
         <div class="emitter-rows">
           ${rules.length ? '<div class="emitter-row emitter-head"><span>Item</span><span>Stock</span><span>Threshold</span></div>' : ''}
           ${rows}
@@ -1065,7 +1062,7 @@ function buildRowPlan(groups, tokens) {
 
 function renderCollapsedGroupRow(group) {
   const members = targets.filter(t => t.group_id === group.id)
-  const icons = members.slice(0, 5).map(t => iconHtml(t.x, t.y)).join('')
+  const icons = members.slice(0, 5).map(t => iconHtml(t.label)).join('')
   const extra = members.length > 5 ? `<span class="group-extra-count">+${members.length - 5}</span>` : ''
   const allEnabled = members.every(t => t.enabled !== 0)
   return `
@@ -1343,7 +1340,7 @@ function renderTable() {
         </td>
         <td>
           <div class="item-slot" data-change="${label}" data-tip="${label}" data-tip-body="${esc(failReason(t.label))}">
-            ${iconHtml(t.x, t.y)}
+            ${iconHtml(t.label)}
             <span>${label}</span>
           </div>
         </td>
@@ -1460,7 +1457,7 @@ function renderAddPanel() {
   if (!container) return
 
   const slotHtml = pendingAdd
-    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.x, pendingAdd.y)}<span>${esc(pendingAdd.label)}</span></div>`
+    ? `<div class="item-slot item-slot-pick" id="add-slot">${iconHtml(pendingAdd.label)}<span>${esc(pendingAdd.label)}</span></div>`
     : `<div class="item-slot item-slot-empty" id="add-slot">Click to select item</div>`
 
   const threshVal = addDefaults.threshold != null ? formatShort(addDefaults.threshold) : ''
@@ -1522,8 +1519,7 @@ function renderAddPanel() {
 
   document.getElementById('add-slot').onclick = () => {
     openItemPicker(item => {
-      const reg = registryEntry(item.label)
-      pendingAdd = { ...item, x: reg?.x, y: reg?.y, ...addDefaults }
+      pendingAdd = { ...item, ...addDefaults }
       renderAddPanel()
     })
   }
@@ -1579,8 +1575,8 @@ async function init() {
     await migrateLocalLayout()
     render()
     connectWs()
-  } catch {
-    app.innerHTML = `<p>${msg.serverDown}</p>`
+  } catch (e) {
+    app.innerHTML = `<p>${esc(e.setup ? e.message : msg.serverDown)}</p>`
   }
 }
 

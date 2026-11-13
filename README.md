@@ -34,49 +34,38 @@ then run `Maintainer` to run the program
 
 ## Web Server Setup
 
-### No server (Local / Single player, Super Easy)  
+### Option 1 - Cloudflare (Free, always on, recommended)
+
+Cloudflare runs the website for you for free, so it keeps working while your PC is off.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Soycakes/OC-WebInterface-Maintainer)
+
+1. Click the button above, sign in (or make a free Cloudflare account) and connect GitHub
+2. When asked, set `BROWSER_PASSWORD` (password for your website) and `API_KEY` (any random string, also goes in Maintainer OC's config.lua). Both are required.
+3. Deploy. Your website URL is shown at the end, looking like `https://oc-maintainer.your-name.workers.dev`
+4. Add the website URL and API key in Maintainer OC's config.lua (type `edit config.lua`, set `server = "https://your-url-here",` and `api_key = "your-api-key",` then `Ctrl+S Ctrl+W` to save&close)
+
+> Forgot to set the password or API key? In Cloudflare go to Workers & Pages -> oc-maintainer -> Settings -> Variables and Secrets, add them there and the site will start working.
+
+> Moving from Railway? Click Export on your old site, then Import on the new one. History doesn't carry over.
+
+---
+
+### Option 2 - Local (Single player / your own PC or VPS)
+
+Needs [Node.js](https://nodejs.org) 22 or newer.  
 Download the project here, then run Start.bat  
 On first time running, you'll have an option to set :  
-1. password (Not needed for local, leave blank)  
-2. API key (also not needed, set anything)  
+1. password (Not needed if only you can reach this PC, leave blank)  
+2. API key (set anything, same value goes in Maintainer OC's config.lua)  
 3. port  (3000 is fine for default)  
 
-all of these can be changed later in `server/.env`
+all of these can be changed later in `.dev.vars`
 
 Open `http://localhost:3000`
 
 > Note - You may have to whitelist local address in OpenComputer's config. Configs -> OpenComputers.cfg  
 > Find `filteringRules` inside and add `"allow ip:127.0.0.1",`
-
-### On a server (More choices, depends on what you want)
-
-Pick one option based on your situation.
-
-### Option 1 - Railway ("One click" solution)
-
-Railway hosts the server for you, using this repo directly.  
-Free tier covers normal usage.
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com/deploy/ltSUYK?referralCode=sGOO6e)
-
-1. Click the button above and sign in with GitHub
-2. Deploy
-3. (Optional) in Variables tab, add `BROWSER_PASSWORD` (used as password for your website)
-4. (Optional) in same place, add `API_KEY` (any string you choose, add this in Maintainer OC's config.lua)
-5. In Settings tab, scroll down to Networking, and click "Generate Domain". This is your URL for your website.
-6. Add the website URL in Maintainer OC's config.lua (type "edit config.lua", type in value `server = "https://Railway-URL-Here",` then `Ctrl+S Ctrl+W` to save&close)  
-  
-If any changes were made in 3,4 make sure to click Deploy in middle area of the page
-
----
-
-### Option 2 - (WIP) Oracle Cloud Free Tier
-
-Runs on VPS. More setup than Railway but no usage limits.
-
-1. WIP, will fill in later
-
-> **Other options:** You can also use any other VPS.
 
 ---
 
@@ -86,8 +75,8 @@ As said above, you need to change 'Maintainer' OC's config.lua
 
 ```lua
 return {
-  server = "https://your-app.railway.app", -- Railway server URL
-  api_key = "your-api-key", -- Can be blank
+  server = "https://oc-maintainer.your-name.workers.dev", -- Your website URL
+  api_key = "your-api-key", -- Same as API_KEY on the website
   network_id = "main", -- Don't touch this, WIP
   timeout = 5, -- Seconds to wait for the web server before giving up on that sync
   debug = true, -- Shows ME call count and time on screen

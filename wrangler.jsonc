@@ -1,0 +1,17 @@
+{
+  "name": "oc-maintainer",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-10-01",
+  "send_metrics": false,
+  "build": {
+    "command": "npm run build",
+    "watch_dir": "client/src"
+  },
+  "assets": {
+    "directory": "client/dist"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "MAINTAINER", "class_name": "Maintainer" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Maintainer"] }]
+}

@@ -107,7 +107,6 @@ button:disabled {
 .gtnh-icon {
   width: 32px;
   height: 32px;
-  background-image: url('/atlas.webp');
   background-repeat: no-repeat;
   background-size: auto;
   display: inline-block;

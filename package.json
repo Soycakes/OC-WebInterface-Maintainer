@@ -1,11 +1,14 @@
 {
   "name": "oc-web-interface-maintainer",
-  "version": "1.0.0",
-  "engines": {
-    "node": "20.x"
-  },
+  "private": true,
+  "type": "module",
   "scripts": {
-    "build": "cd client && npm install && npm run build && cd ../server && npm install",
-    "start": "cd server && node index.js"
+    "build": "vite build client",
+    "dev": "wrangler dev --port 3000",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "vite": "^5.2.0",
+    "wrangler": "^4.161.0"
   }
 }

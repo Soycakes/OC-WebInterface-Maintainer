@@ -1,13 +1,13 @@
 @echo off
 setlocal enabledelayedexpansion
 
-if exist server\.env goto install
+if exist .dev.vars goto install
 
 echo.
 echo  OC Level Maintainer
 echo  --------------------
 echo.
-set /p PASS=  Browser password:
+set /p PASS=  Browser password (blank is fine when only you can reach this PC):
 set /p KEY=  API key (copy this into the maintainer OC config.lua):
 set /p PORT=  Port [3000]:
 if "!PORT!"=="" set PORT=3000
@@ -15,39 +15,26 @@ if "!PORT!"=="" set PORT=3000
 (
   echo BROWSER_PASSWORD=!PASS!
   echo API_KEY=!KEY!
+  echo LOCAL=1
   echo PORT=!PORT!
-) > server\.env
+) > .dev.vars
 
 echo.
-echo  Saved to server\.env
+echo  Saved to .dev.vars
 echo.
 
 :install
-if not exist server\node_modules (
-  echo  Installing server dependencies...
-  pushd server
-  npm install
-  popd
-  echo.
-)
-if not exist client\node_modules (
-  echo  Installing client dependencies...
-  pushd client
-  npm install
-  popd
+for /f "tokens=2 delims==" %%a in ('findstr /b "PORT=" .dev.vars') do set PORT=%%a
+if "!PORT!"=="" set PORT=3000
+
+if not exist node_modules (
+  echo  Installing dependencies...
+  call npm install
   echo.
 )
 
-echo  Building client...
-pushd client
-call npm run build
-popd
-
+echo  Starting on http://localhost:!PORT!
 echo.
-echo  Starting server...
-echo.
-pushd server
-node index.js
-popd
+call npx wrangler dev --port !PORT!
 
 pause
