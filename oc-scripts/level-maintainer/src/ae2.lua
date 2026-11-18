@@ -43,15 +43,19 @@ function ae2.forgetMissing()
   end
 end
 
-function ae2.getItemCounts()
-  queryCount = queryCount + 1
-  local counts, craftable = {}, {}
-  for _, item in ipairs(ME.getItemsInNetwork()) do
-    local label = item.label
-    if label and (counts[label] == nil or item.isCraftable and not craftable[label]) then
-      counts[label] = item.size or 0
-      craftable[label] = item.isCraftable
+function ae2.getItemCounts(labels)
+  local counts = {}
+  for label in pairs(labels) do
+    queryCount = queryCount + 1
+    local list, reason = ME.getItemsInNetwork({ label = label })
+    if not list then error("can't read ME network: " .. tostring(reason or "interface offline"), 0) end
+    local count, craftable
+    for _, item in ipairs(list) do
+      if count == nil or item.isCraftable and not craftable then
+        count, craftable = item.size or 0, item.isCraftable
+      end
     end
+    counts[label] = count or 0
   end
   return counts
 end

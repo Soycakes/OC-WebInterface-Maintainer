@@ -73,7 +73,7 @@ local function drawScreen(active, requested, failed, queryTime, qCount)
   if queryTime then
     local ticks = math.floor(queryTime / 0.05 + 0.5)
     local countStr = qCount and (" (" .. qCount .. " ME calls)") or ""
-    statusLine = statusLine .. "  Query: " .. string.format("%.2fs", queryTime) .. " (" .. ticks .. "t)" .. countStr
+    statusLine = statusLine .. "  Query: " .. string.format("%.2fs", queryTime) .. " (" .. ticks .. "t)" .. countStr .. "  Free: " .. math.floor(computer.freeMemory() / 1024) .. "k"
   end
   gpu.set(1, screenH, statusLine)
   gpu.setForeground(0xFFFFFF)
@@ -142,27 +142,20 @@ local function trySync()
 end
 
 local function stock()
-  local itemCounts = ae2.getItemCounts()
-  local fluidCounts
-  local function fluidCount(label)
-    fluidCounts = fluidCounts or ae2.getFluidCounts()
-    return fluidCounts[label] or 0
-  end
-  local counts = {}
-  for label in pairs(items) do
-    counts[label] = itemCounts[label] or 0
-  end
-  for label in pairs(fluids) do
-    counts[label] = fluidCount(label)
-  end
+  local itemLabels, fluidLabels = {}, {}
+  for label in pairs(items) do itemLabels[label] = true end
+  for label in pairs(fluids) do fluidLabels[label] = true end
   for _, list in ipairs({ items, fluids }) do
     for _, target in pairs(list) do
       for _, rule in ipairs(target.emitter and target.emitter.rules or {}) do
-        if counts[rule.label] == nil then
-          counts[rule.label] = rule.is_fluid and fluidCount(rule.label) or itemCounts[rule.label] or 0
-        end
+        if rule.is_fluid then fluidLabels[rule.label] = true else itemLabels[rule.label] = true end
       end
     end
+  end
+  local counts = ae2.getItemCounts(itemLabels)
+  if next(fluidLabels) then
+    local fluidCounts = ae2.getFluidCounts()
+    for label in pairs(fluidLabels) do counts[label] = fluidCounts[label] or 0 end
   end
   return counts
 end
@@ -236,7 +229,7 @@ local function mainLoop()
   end
 end
 
-local ok, err = pcall(mainLoop)
+local ok, err = xpcall(mainLoop, debug.traceback)
 if not ok then
   print("Stopped: " .. tostring(err))
 end
