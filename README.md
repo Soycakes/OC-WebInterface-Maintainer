@@ -26,7 +26,11 @@ To install, run
 ```
 wget https://raw.githubusercontent.com/Soycakes/OC-WebInterface-Maintainer/main/oc-scripts/install-maintainer.lua && install-maintainer
 ```
-then run `Maintainer` to run the program
+
+To run the program, run
+```
+maintainer
+```
 
 > Upgrading from the old 2-computer setup? Delete the maintainer's old `config.lua` before running the installer, and the Connector computer and Linked Cards are no longer needed.
 
